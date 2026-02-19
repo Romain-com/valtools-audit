@@ -2,6 +2,8 @@ import { AuditSeoInput, AuditSeoOutput } from "@/types/audit";
 import { askLLMJson } from "@/lib/llm";
 import { googleSerp, googleSerpWithPAA } from "@/lib/dataforseo";
 import { getKeywordVolumes } from "@/lib/haloscan";
+import { trackApiCall } from "@/lib/api-tracker";
+import { API_COSTS } from "@/lib/api-costs";
 
 // ============================================
 // MODULE 4 — AUDIT SEO
@@ -40,7 +42,8 @@ function getVisibiliteStatut(position: number | null): string {
 }
 
 export async function runAuditSeo(
-  input: AuditSeoInput
+  input: AuditSeoInput,
+  auditId?: string | null
 ): Promise<AuditSeoOutput> {
   const { destination, urlOT } = input;
   const urlOTDomain = urlOT ? new URL(urlOT).hostname : null;
@@ -50,7 +53,13 @@ export async function runAuditSeo(
   const keywords = noyau.map((n) => n.kw);
 
   // Étape B : Volumes de recherche via HaloScan
-  const volumes = await getKeywordVolumes(keywords);
+  const volumes = await trackApiCall({
+    auditId,
+    apiName: "haloscan",
+    endpoint: "keyword_volume",
+    call: () => getKeywordVolumes(keywords),
+    estimateCost: () => keywords.length * API_COSTS.haloscan.perKeyword,
+  });
   const motsCles: AuditSeoOutput["motsCles"] = noyau.map((n, i) => ({
     kw: n.kw,
     volume: volumes[i]?.volume || 0,
@@ -69,7 +78,13 @@ export async function runAuditSeo(
 
   for (const mc of top3Business) {
     try {
-      const serpResults = await googleSerp(mc.kw, 10);
+      const serpResults = await trackApiCall({
+        auditId,
+        apiName: "dataforseo",
+        endpoint: "google/serp",
+        call: () => googleSerp(mc.kw, 10),
+        estimateCost: () => API_COSTS.dataforseo.serp,
+      });
       const items = serpResults[0]?.items || [];
       const otPosition = urlOTDomain
         ? items.find((item) => item.domain?.includes(urlOTDomain))
@@ -93,7 +108,13 @@ export async function runAuditSeo(
   // Étape D : People Also Ask via DataForSEO
   let paa: string[] = [];
   try {
-    const serpPAA = await googleSerpWithPAA(`Visiter ${destination}`);
+    const serpPAA = await trackApiCall({
+      auditId,
+      apiName: "dataforseo",
+      endpoint: "google/serp/paa",
+      call: () => googleSerpWithPAA(`Visiter ${destination}`),
+      estimateCost: () => API_COSTS.dataforseo.serp,
+    });
     const items = serpPAA[0]?.items || [];
     paa = items
       .filter((item) => item.type === "people_also_ask")
@@ -116,8 +137,7 @@ export async function runAuditSeo(
   // Étape E : Synthèse stratégique LLM
   let synthese: AuditSeoOutput["synthese"];
   try {
-    synthese = await askLLMJson<AuditSeoOutput["synthese"]>(
-      `Voici les données d'audit SEO pour la destination ${destination}.
+    const prompt = `Voici les données d'audit SEO pour la destination ${destination}.
 TOP 3 Mots-clés Business (Volume/Mois) :
 ${top3Business.map((m) => `- "${m.kw}" : ${m.volume} recherches/mois`).join("\n")}
 
@@ -132,9 +152,21 @@ Rédige une synthèse de 3 points :
 - Opportunité Manquée : Si le volume est fort sur 'Hôtel' mais que l'OT est absent du Top 10, dis-le clairement.
 - Intention Dominante : Les gens cherchent-ils plutôt du luxe, du camping ou des activités ?
 - Réponse aux PAA : Si les questions concernent le parking ou la météo, suggère de créer une page dédiée.
-Sortie JSON : { "opportunite": "...", "intention": "...", "paaRecommendation": "..." }`,
-      "Agis comme un consultant SEO Stratégique."
-    );
+Sortie JSON : { "opportunite": "...", "intention": "...", "paaRecommendation": "..." }`;
+
+    synthese = await trackApiCall({
+      auditId,
+      apiName: "openai",
+      endpoint: "chat/completions",
+      call: () =>
+        askLLMJson<AuditSeoOutput["synthese"]>(
+          prompt,
+          "Agis comme un consultant SEO Stratégique."
+        ),
+      estimateCost: () =>
+        Math.ceil(prompt.length / 4) * API_COSTS.openai.promptTokenCost +
+        200 * API_COSTS.openai.completionTokenCost,
+    });
   } catch {
     synthese = {
       opportunite:

@@ -2,24 +2,19 @@ import { VolumeAffairesInput, VolumeAffairesOutput } from "@/types/audit";
 import { askLLMJson } from "@/lib/llm";
 import { getTaxeDeSejour } from "@/lib/dgfip";
 import { findCommuneByInsee } from "@/lib/communes";
+import { trackApiCall } from "@/lib/api-tracker";
+import { API_COSTS } from "@/lib/api-costs";
 
 // ============================================
 // MODULE 2 — VOLUME D'AFFAIRES
 // ============================================
 
-/**
- * Calculs algorithmiques (pas de LLM) :
- * - Volume d'Affaires Hébergement = Taxe × 25
- * - Nuitées estimées = Taxe / 1.5
- * - Ratio Pression Touristique = Taxe / Population
- */
-
 export async function runVolumeAffaires(
-  input: VolumeAffairesInput
+  input: VolumeAffairesInput,
+  auditId?: string | null
 ): Promise<VolumeAffairesOutput> {
   const { destination, codeInsee } = input;
 
-  // Étape 1 : Trouver la commune dans le CSV pour récupérer le SIREN
   const commune = await findCommuneByInsee(codeInsee);
   if (!commune) {
     throw new Error(
@@ -27,9 +22,14 @@ export async function runVolumeAffaires(
     );
   }
 
-  // Étape 2 : Interroger DGFiP pour la taxe de séjour
-  // On cherche la commune + on tente l'EPCI du même département
-  const taxeData = await getTaxeDeSejour(commune.siren);
+  // DGFiP — taxe de séjour
+  const taxeData = await trackApiCall({
+    auditId,
+    apiName: "dgfip",
+    endpoint: "balances-comptables-communes-2024",
+    call: () => getTaxeDeSejour(commune.siren),
+    estimateCost: () => 0,
+  });
   const taxePercue = taxeData.totalTaxe;
 
   if (taxePercue === 0) {
@@ -43,18 +43,14 @@ export async function runVolumeAffaires(
     };
   }
 
-  // Étape 3 : Calculs algorithmiques
   const volumeAffaires = taxePercue * 25;
   const nuiteesEstimees = Math.round(taxePercue / 1.5);
   const population = commune.population || 1;
   const ratioPressionTouristique =
     Math.round((taxePercue / population) * 100) / 100;
 
-  // Étape 4 : Diagnostic LLM
-  let diagnostic: string;
-  try {
-    const llmResult = await askLLMJson<{ diagnostic: string }>(
-      `Voici les données financières pour la destination ${destination} :
+  // LLM — diagnostic
+  const llmPrompt = `Voici les données financières pour la destination ${destination} :
 Taxe de séjour encaissée : ${taxePercue.toLocaleString("fr-FR")} €
 Volume d'affaires estimé (Hébergement) : ${volumeAffaires.toLocaleString("fr-FR")} €
 Nuitées estimées : ${nuiteesEstimees.toLocaleString("fr-FR")}
@@ -67,12 +63,22 @@ Rédige un paragraphe de diagnostic orienté opportunité :
 Si le Volume d'Affaires est > 10M€ : Félicite pour la puissance économique.
 Si le ratio par habitant est faible (<10€) : Souligne que le tourisme est une manne sous-exploitée par rapport à la taille de la commune.
 Compare ces chiffres à une "moyenne" théorique pour donner du relief (ex: 'Vous générez l'équivalent de X€ par habitant, ce qui révèle une forte dépendance/opportunité...').
-Sortie JSON : { "diagnostic": "..." }`,
-      "Agis comme un analyste économique touristique."
-    );
+Sortie JSON : { "diagnostic": "..." }`;
+
+  let diagnostic: string;
+  try {
+    const llmResult = await trackApiCall({
+      auditId,
+      apiName: "openai",
+      endpoint: "chat/completions",
+      call: () => askLLMJson<{ diagnostic: string }>(llmPrompt, "Agis comme un analyste économique touristique."),
+      estimateCost: () => {
+        const tokens = Math.ceil(llmPrompt.length / 4);
+        return tokens * API_COSTS.openai.promptTokenCost + 200 * API_COSTS.openai.completionTokenCost;
+      },
+    });
     diagnostic = llmResult.diagnostic;
   } catch {
-    // Fallback algorithmique si LLM indisponible
     if (volumeAffaires > 10_000_000) {
       diagnostic = `${destination} génère un volume d'affaires hébergement estimé à ${(volumeAffaires / 1_000_000).toFixed(1)}M€, ce qui en fait une destination économiquement puissante. Avec ${nuiteesEstimees.toLocaleString("fr-FR")} nuitées estimées et un ratio de ${ratioPressionTouristique}€/habitant, le tourisme représente un levier économique majeur.`;
     } else if (ratioPressionTouristique < 10) {

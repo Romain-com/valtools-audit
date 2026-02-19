@@ -27,7 +27,7 @@ export async function POST(request: NextRequest) {
       console.warn("[Volume Affaires] Supabase non disponible");
     }
 
-    const result = await runVolumeAffaires(body);
+    const result = await runVolumeAffaires(body, auditId);
 
     if (auditId) {
       try {

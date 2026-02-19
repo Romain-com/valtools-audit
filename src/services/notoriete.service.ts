@@ -4,6 +4,8 @@ import { googleMapsSearch, googleSerp } from "@/lib/dataforseo";
 import { getDestinationDescription } from "@/lib/datatourisme";
 import { scrapeHashtagVolume } from "@/lib/apify-instagram";
 import { duckduckgoSearch } from "@/lib/duckduckgo";
+import { trackApiCall } from "@/lib/api-tracker";
+import { API_COSTS } from "@/lib/api-costs";
 
 // ============================================
 // MODULE 1 — NOTORIÉTÉ
@@ -14,15 +16,27 @@ import { duckduckgoSearch } from "@/lib/duckduckgo";
  * Source : Datatourisme → fallback DataForSEO SERP
  */
 async function analyserPositionnement(
-  destination: string
+  destination: string,
+  auditId?: string | null
 ): Promise<NotorieteOutput["positionnement"]> {
   // Étape 1 : Chercher la description via Datatourisme
-  let description = await getDestinationDescription(destination);
+  let description = await trackApiCall({
+    auditId,
+    apiName: "datatourisme",
+    call: () => getDestinationDescription(destination),
+    estimateCost: () => 0,
+  });
 
   // Étape 2 : Fallback → DataForSEO SERP pour la meta description du site officiel
   if (!description) {
     try {
-      const serpResults = await googleSerp(`"${destination}" tourisme site officiel`, 5);
+      const serpResults = await trackApiCall({
+        auditId,
+        apiName: "dataforseo",
+        endpoint: "google/serp",
+        call: () => googleSerp(`"${destination}" tourisme site officiel`, 5),
+        estimateCost: () => API_COSTS.dataforseo.serp,
+      });
       const items = serpResults[0]?.items || [];
       // Chercher un résultat qui ressemble au site OT
       const otResult = items.find(
@@ -49,13 +63,23 @@ async function analyserPositionnement(
 
   // Étape 3 : Analyse LLM
   try {
-    return await askLLMJson<NotorieteOutput["positionnement"]>(
-      `Analyse le texte de présentation ci-dessous concernant ${destination}.
+    const prompt = `Analyse le texte de présentation ci-dessous concernant ${destination}.
 Texte : "${description}"
 Identifie en 2-3 phrases : le positionnement dominant (Nature / Sport / Patrimoine / Mer / Montagne / Urbain), les arguments de vente clés, et le ton de communication.
-Sortie JSON : { "label": "...", "arguments": ["...", "..."], "ton": "..." }`,
-      "Rôle : Expert en marketing territorial."
-    );
+Sortie JSON : { "label": "...", "arguments": ["...", "..."], "ton": "..." }`;
+
+    return await trackApiCall({
+      auditId,
+      apiName: "openai",
+      endpoint: "chat/completions",
+      call: () =>
+        askLLMJson<NotorieteOutput["positionnement"]>(
+          prompt,
+          "Rôle : Expert en marketing territorial."
+        ),
+      estimateCost: () =>
+        Math.ceil(prompt.length / 4) * 0.000003 + 200 * 0.000015,
+    });
   } catch (error) {
     console.warn("[Notoriété 1A] LLM échoué, retour description brute:", error);
     return {
@@ -72,13 +96,20 @@ Sortie JSON : { "label": "...", "arguments": ["...", "..."], "ton": "..." }`,
  */
 async function analyserEReputation(
   destination: string,
-  codePostal: string
+  codePostal: string,
+  auditId?: string | null
 ): Promise<NotorieteOutput["eReputation"]> {
   const query = `Office de Tourisme ${destination} ${codePostal}`;
 
   try {
     // Récupérer les infos Google Maps
-    const mapsResults = await googleMapsSearch(query);
+    const mapsResults = await trackApiCall({
+      auditId,
+      apiName: "dataforseo",
+      endpoint: "google/maps",
+      call: () => googleMapsSearch(query),
+      estimateCost: () => API_COSTS.dataforseo.maps,
+    });
     const items = mapsResults[0]?.items || [];
     const otItem = items[0]; // Premier résultat = le plus pertinent
 
@@ -98,7 +129,13 @@ async function analyserEReputation(
     let avisTextes: string[] = [];
     try {
       const { googleReviews } = await import("@/lib/dataforseo");
-      const reviewsData = await googleReviews(query);
+      const reviewsData = await trackApiCall({
+        auditId,
+        apiName: "dataforseo",
+        endpoint: "google/reviews",
+        call: () => googleReviews(query),
+        estimateCost: () => API_COSTS.dataforseo.reviews,
+      });
       const reviews = reviewsData[0]?.items || [];
       avisTextes = reviews
         .slice(0, 5)
@@ -111,17 +148,24 @@ async function analyserEReputation(
     // Analyse de sentiment LLM (si on a des avis)
     if (avisTextes.length > 0) {
       try {
-        const sentimentResult = await askLLMJson<{
-          synthese: string;
-          sentiment_score: number;
-        }>(
-          `Contexte : Voici les derniers avis laissés sur l'Office de Tourisme de ${destination}.
+        const prompt = `Contexte : Voici les derniers avis laissés sur l'Office de Tourisme de ${destination}.
 Avis :
 ${avisTextes.map((a, i) => `${i + 1}. "${a}"`).join("\n")}
 Tâche : Synthétise l'opinion générale en 1 phrase et donne un score de sentiment de -1 (Haine) à +1 (Amour).
-Sortie JSON : { "synthese": "...", "sentiment_score": 0.X }`,
-          "Rôle : Analyste satisfaction client."
-        );
+Sortie JSON : { "synthese": "...", "sentiment_score": 0.X }`;
+
+        const sentimentResult = await trackApiCall({
+          auditId,
+          apiName: "openai",
+          endpoint: "chat/completions",
+          call: () =>
+            askLLMJson<{
+              synthese: string;
+              sentiment_score: number;
+            }>(prompt, "Rôle : Analyste satisfaction client."),
+          estimateCost: () =>
+            Math.ceil(prompt.length / 4) * 0.000003 + 200 * 0.000015,
+        });
 
         return {
           note,
@@ -156,7 +200,8 @@ Sortie JSON : { "synthese": "...", "sentiment_score": 0.X }`,
  * Source : Apify (principal) → DuckDuckGo (fallback)
  */
 async function analyserVisibiliteSociale(
-  destination: string
+  destination: string,
+  auditId?: string | null
 ): Promise<NotorieteOutput["social"]> {
   const hashtagName = destination
     .normalize("NFD")
@@ -167,7 +212,13 @@ async function analyserVisibiliteSociale(
   // Étape 1 : Volume Hashtag via Apify (principal)
   let volumeHashtag = 0;
   try {
-    volumeHashtag = await scrapeHashtagVolume(hashtagName);
+    volumeHashtag = await trackApiCall({
+      auditId,
+      apiName: "apify",
+      endpoint: "instagram/hashtag",
+      call: () => scrapeHashtagVolume(hashtagName),
+      estimateCost: () => 0.01,
+    });
   } catch {
     console.warn("[Notoriété 1C] Apify échoué, fallback DuckDuckGo");
   }
@@ -175,9 +226,15 @@ async function analyserVisibiliteSociale(
   // Fallback DuckDuckGo si Apify retourne 0
   if (volumeHashtag === 0) {
     try {
-      const ddgResults = await duckduckgoSearch(
-        `site:instagram.com/explore/tags/ "${hashtagName}"`
-      );
+      const ddgResults = await trackApiCall({
+        auditId,
+        apiName: "duckduckgo",
+        call: () =>
+          duckduckgoSearch(
+            `site:instagram.com/explore/tags/ "${hashtagName}"`
+          ),
+        estimateCost: () => 0,
+      });
       // Estimation basique : si on trouve des résultats, la destination a une présence
       volumeHashtag = ddgResults.length > 0 ? ddgResults.length * 100 : 0;
     } catch {
@@ -188,10 +245,14 @@ async function analyserVisibiliteSociale(
   // Étape 2 : Rechercher le compte Instagram OT
   let followersOT = 0;
   try {
-    const serpResults = await googleSerp(
-      `Instagram Office de Tourisme ${destination}`,
-      5
-    );
+    const serpResults = await trackApiCall({
+      auditId,
+      apiName: "dataforseo",
+      endpoint: "google/serp",
+      call: () =>
+        googleSerp(`Instagram Office de Tourisme ${destination}`, 5),
+      estimateCost: () => API_COSTS.dataforseo.serp,
+    });
     const items = serpResults[0]?.items || [];
     const instagramResult = items.find((item) =>
       item.url.includes("instagram.com")
@@ -257,15 +318,16 @@ function parseFollowerCount(raw: string): number {
 // ============================================
 
 export async function runNotoriete(
-  input: NotorieteInput
+  input: NotorieteInput,
+  auditId?: string | null
 ): Promise<NotorieteOutput> {
   const { destination, codePostal } = input;
 
   // Exécution parallèle des 3 sous-modules
   const [positionnement, eReputation, social] = await Promise.all([
-    analyserPositionnement(destination),
-    analyserEReputation(destination, codePostal),
-    analyserVisibiliteSociale(destination),
+    analyserPositionnement(destination, auditId),
+    analyserEReputation(destination, codePostal, auditId),
+    analyserVisibiliteSociale(destination, auditId),
   ]);
 
   return {

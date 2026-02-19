@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Exécuter le module Notoriété
-    const result = await runNotoriete(body);
+    const result = await runNotoriete(body, auditId);
 
     // Sauvegarder le résultat dans Supabase
     if (auditId) {

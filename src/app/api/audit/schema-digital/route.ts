@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
       console.warn("[Schéma Digital] Supabase non disponible");
     }
 
-    const result = await runSchemaDigital(body);
+    const result = await runSchemaDigital(body, auditId);
 
     if (auditId) {
       try {

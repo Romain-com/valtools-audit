@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
       console.warn("[SEO] Supabase non disponible");
     }
 
-    const result = await runAuditSeo(body);
+    const result = await runAuditSeo(body, auditId);
 
     if (auditId) {
       try {

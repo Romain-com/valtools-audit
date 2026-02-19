@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
       auditId = audit?.id || null;
     } catch { console.warn("[Benchmark] Supabase non disponible"); }
 
-    const result = await runBenchmark(body);
+    const result = await runBenchmark(body, auditId);
 
     if (auditId) {
       try {

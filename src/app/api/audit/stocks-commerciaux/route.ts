@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
       auditId = audit?.id || null;
     } catch { console.warn("[Stocks Commerciaux] Supabase non disponible"); }
 
-    const result = await runStocksCommerciaux(body);
+    const result = await runStocksCommerciaux(body, auditId);
 
     if (auditId) {
       try {

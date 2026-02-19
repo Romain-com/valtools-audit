@@ -3,6 +3,8 @@ import { askLLMJson } from "@/lib/llm";
 import { loadCommunes, type CommuneData } from "@/lib/communes";
 import { duckduckgoSearch } from "@/lib/duckduckgo";
 import { googleResultsCount } from "@/lib/dataforseo";
+import { trackApiCall } from "@/lib/api-tracker";
+import { API_COSTS } from "@/lib/api-costs";
 
 // ============================================
 // MODULE 7 — BENCHMARK CONCURRENTIEL
@@ -99,7 +101,8 @@ function findConcurrentsIndirects(
  * D — Audit Flash sur un concurrent (scores social + offre)
  */
 async function auditFlashCommune(
-  nom: string
+  nom: string,
+  auditId?: string | null
 ): Promise<{ scoreSocial: number; scoreOffre: number }> {
   const nomNormalized = nom
     .normalize("NFD")
@@ -110,16 +113,30 @@ async function auditFlashCommune(
   // Score Social : recherche hashtag Instagram via DDG
   let scoreSocial = 0;
   try {
-    const ddgResults = await duckduckgoSearch(
-      `site:instagram.com/explore/tags/ "${nomNormalized}"`
-    );
+    const ddgResults = await trackApiCall({
+      auditId,
+      apiName: "duckduckgo",
+      endpoint: "search",
+      call: () =>
+        duckduckgoSearch(
+          `site:instagram.com/explore/tags/ "${nomNormalized}"`
+        ),
+      estimateCost: () => 0,
+    });
     scoreSocial = ddgResults.length * 100;
   } catch {
     // Fallback : estimation via DataForSEO
     try {
-      scoreSocial = await googleResultsCount(
-        `site:instagram.com "${nom}"`
-      );
+      scoreSocial = await trackApiCall({
+        auditId,
+        apiName: "dataforseo",
+        endpoint: "google/resultsCount",
+        call: () =>
+          googleResultsCount(
+            `site:instagram.com "${nom}"`
+          ),
+        estimateCost: () => API_COSTS.dataforseo.resultsCount,
+      });
     } catch {
       scoreSocial = 0;
     }
@@ -128,9 +145,16 @@ async function auditFlashCommune(
   // Score Offre : Airbnb via DataForSEO
   let scoreOffre = 0;
   try {
-    scoreOffre = await googleResultsCount(
-      `site:airbnb.fr/rooms "${nom}"`
-    );
+    scoreOffre = await trackApiCall({
+      auditId,
+      apiName: "dataforseo",
+      endpoint: "google/resultsCount",
+      call: () =>
+        googleResultsCount(
+          `site:airbnb.fr/rooms "${nom}"`
+        ),
+      estimateCost: () => API_COSTS.dataforseo.resultsCount,
+    });
   } catch {
     scoreOffre = 0;
   }
@@ -139,7 +163,8 @@ async function auditFlashCommune(
 }
 
 export async function runBenchmark(
-  input: BenchmarkInput
+  input: BenchmarkInput,
+  auditId?: string | null
 ): Promise<BenchmarkOutput> {
   const { destination, codeInsee, population, departement } = input;
 
@@ -169,8 +194,8 @@ export async function runBenchmark(
   // D — Audit Flash sur chaque concurrent + la cible
   const allConcurrents = [...concurrentsDirects, ...concurrentsIndirects];
   const auditFlashResults = await Promise.all([
-    auditFlashCommune(destination),
-    ...allConcurrents.map((c) => auditFlashCommune(c.nom)),
+    auditFlashCommune(destination, auditId),
+    ...allConcurrents.map((c) => auditFlashCommune(c.nom, auditId)),
   ]);
 
   const targetAudit = auditFlashResults[0];
@@ -205,16 +230,27 @@ export async function runBenchmark(
   let positionnement: string;
   let recommandation: string;
   try {
-    const llmResult = await askLLMJson<{
-      positionnement: string;
-      recommandation: string;
-    }>(
-      `Destination cible : ${destination} — Position sociale: ${rangSocial}/7, Position offre: ${rangOffre}/7
+    const prompt = `Destination cible : ${destination} — Position sociale: ${rangSocial}/7, Position offre: ${rangOffre}/7
 Concurrents : ${auditFlash.map((a) => `${a.nom} (Social: ${a.scoreSocial}, Offre: ${a.scoreOffre})`).join(", ")}
 Rédige une phrase de positionnement percutante pour le rapport.
-Sortie JSON : { "positionnement": "...", "recommandation": "..." }`,
-      "Agis comme un stratège territorial."
-    );
+Sortie JSON : { "positionnement": "...", "recommandation": "..." }`;
+
+    const llmResult = await trackApiCall({
+      auditId,
+      apiName: "openai",
+      endpoint: "chat/completions",
+      call: () =>
+        askLLMJson<{
+          positionnement: string;
+          recommandation: string;
+        }>(
+          prompt,
+          "Agis comme un stratège territorial."
+        ),
+      estimateCost: () =>
+        (prompt.length / 4) * API_COSTS.openai.promptTokenCost +
+        200 * API_COSTS.openai.completionTokenCost,
+    });
     positionnement = llmResult.positionnement;
     recommandation = llmResult.recommandation;
   } catch {

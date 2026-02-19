@@ -1,6 +1,8 @@
 import { StocksCommerciauxInput, StocksCommerciauxOutput } from "@/types/audit";
 import { askLLMJson } from "@/lib/llm";
 import { googleResultsCount } from "@/lib/dataforseo";
+import { trackApiCall } from "@/lib/api-tracker";
+import { API_COSTS } from "@/lib/api-costs";
 
 // ============================================
 // MODULE 6 — STOCKS COMMERCIAUX
@@ -29,20 +31,63 @@ const DORKING_QUERIES = {
 };
 
 export async function runStocksCommerciaux(
-  input: StocksCommerciauxInput
+  input: StocksCommerciauxInput,
+  auditId?: string | null
 ): Promise<StocksCommerciauxOutput> {
   const { destination, stocksPhysiques } = input;
 
   // Lancer toutes les requêtes de dorking en parallèle
   const [airbnb, booking, abritel, tripadvisor, getyourguide, thefork, michelin] =
     await Promise.all([
-      googleResultsCount(DORKING_QUERIES.hebergement.airbnb(destination)).catch(() => 0),
-      googleResultsCount(DORKING_QUERIES.hebergement.booking(destination)).catch(() => 0),
-      googleResultsCount(DORKING_QUERIES.hebergement.abritel(destination)).catch(() => 0),
-      googleResultsCount(DORKING_QUERIES.activites.tripadvisor(destination)).catch(() => 0),
-      googleResultsCount(DORKING_QUERIES.activites.getyourguide(destination)).catch(() => 0),
-      googleResultsCount(DORKING_QUERIES.restauration.thefork(destination)).catch(() => 0),
-      googleResultsCount(DORKING_QUERIES.restauration.michelin(destination)).catch(() => 0),
+      trackApiCall({
+        auditId,
+        apiName: "dataforseo",
+        endpoint: "google/resultsCount",
+        call: () => googleResultsCount(DORKING_QUERIES.hebergement.airbnb(destination)),
+        estimateCost: () => API_COSTS.dataforseo.resultsCount,
+      }).catch(() => 0),
+      trackApiCall({
+        auditId,
+        apiName: "dataforseo",
+        endpoint: "google/resultsCount",
+        call: () => googleResultsCount(DORKING_QUERIES.hebergement.booking(destination)),
+        estimateCost: () => API_COSTS.dataforseo.resultsCount,
+      }).catch(() => 0),
+      trackApiCall({
+        auditId,
+        apiName: "dataforseo",
+        endpoint: "google/resultsCount",
+        call: () => googleResultsCount(DORKING_QUERIES.hebergement.abritel(destination)),
+        estimateCost: () => API_COSTS.dataforseo.resultsCount,
+      }).catch(() => 0),
+      trackApiCall({
+        auditId,
+        apiName: "dataforseo",
+        endpoint: "google/resultsCount",
+        call: () => googleResultsCount(DORKING_QUERIES.activites.tripadvisor(destination)),
+        estimateCost: () => API_COSTS.dataforseo.resultsCount,
+      }).catch(() => 0),
+      trackApiCall({
+        auditId,
+        apiName: "dataforseo",
+        endpoint: "google/resultsCount",
+        call: () => googleResultsCount(DORKING_QUERIES.activites.getyourguide(destination)),
+        estimateCost: () => API_COSTS.dataforseo.resultsCount,
+      }).catch(() => 0),
+      trackApiCall({
+        auditId,
+        apiName: "dataforseo",
+        endpoint: "google/resultsCount",
+        call: () => googleResultsCount(DORKING_QUERIES.restauration.thefork(destination)),
+        estimateCost: () => API_COSTS.dataforseo.resultsCount,
+      }).catch(() => 0),
+      trackApiCall({
+        auditId,
+        apiName: "dataforseo",
+        endpoint: "google/resultsCount",
+        call: () => googleResultsCount(DORKING_QUERIES.restauration.michelin(destination)),
+        estimateCost: () => API_COSTS.dataforseo.resultsCount,
+      }).catch(() => 0),
     ]);
 
   // Calcul Digital Coverage (algorithmique)
@@ -80,8 +125,7 @@ export async function runStocksCommerciaux(
   // Diagnostic LLM
   let diagnostic: string;
   try {
-    const result = await askLLMJson<{ diagnostic: string }>(
-      `Données de la destination ${destination} :
+    const prompt = `Données de la destination ${destination} :
 Hébergements physiques: ${stockPhysiqueHeb} | Airbnb: ${airbnb} | Booking: ${booking} | Abritel: ${abritel}
 Activités physiques: ${stockPhysiqueAct} | TripAdvisor: ${tripadvisor} | GetYourGuide: ${getyourguide}
 Restauration: TheFork: ${thefork} | Michelin: ${michelin}
@@ -92,9 +136,22 @@ Tâche :
 2. Alerte invisibilité si activités commerciales < 10% du stock physique
 3. Risque fiscal si volume Airbnb important
 Ton : Business, factuel, orienté ROI
-Sortie JSON : { "diagnostic": "..." }`,
-      "Agis comme un expert en distribution touristique."
-    );
+Sortie JSON : { "diagnostic": "..." }`;
+
+    const result = await trackApiCall({
+      auditId,
+      apiName: "openai",
+      endpoint: "chat/completions",
+      call: () =>
+        askLLMJson<{ diagnostic: string }>(
+          prompt,
+          "Agis comme un expert en distribution touristique."
+        ),
+      estimateCost: () => {
+        const tokens = Math.ceil(prompt.length / 4);
+        return tokens * API_COSTS.openai.promptTokenCost + 200 * API_COSTS.openai.completionTokenCost;
+      },
+    });
     diagnostic = result.diagnostic;
   } catch {
     diagnostic = `${destination} : ${stockCommercialHeb} hébergements commercialisés en ligne (Airbnb: ${airbnb}, Booking: ${booking}) pour ${stockPhysiqueHeb} physiques. Digital Coverage: ${digitalCoverageHeb}%.`;
