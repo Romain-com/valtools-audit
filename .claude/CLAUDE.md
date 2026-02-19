@@ -143,6 +143,7 @@ Clés API dans `.env.local` uniquement. Jamais en dur. Jamais committées.
 - Système de tracking API : wrapper trackApiCall(), grille de coûts, intégré dans les 7 services (43 appels trackés)
 - Page monitoring `/monitoring` : KPIs globaux, détail par API, détail par audit, alertes automatiques (>2€, >70% LLM)
 - API monitoring GET `/api/monitoring`
+- **Module 2 réécrit** : DGFiP commune (7311/7321/7323) + EPCI/GFP (7346/7351/7352), fallback année 2024→2022, mapping commune→EPCI via geo.api.gouv.fr, diagnostic IA avec niveau, testé Chamonix (3.75M€ EPCI) et Saint-Bonnet-le-Froid
 
 ### 🔄 En cours
 - Aucun chantier en cours

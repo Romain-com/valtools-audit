@@ -45,15 +45,20 @@ export interface NotorieteResult {
 export interface VolumeAffairesInput {
   destination: string;
   codeInsee: string;
+  population: number;
 }
 
-export interface VolumeAffairesOutput {
-  taxePercue: number;
+export interface VolumeAffairesResult {
+  taxeTotale: number;
+  compte7311: number;
+  compte7321: number;
   volumeAffaires: number;
   nuiteesEstimees: number;
   ratioPressionTouristique: number;
+  source: "commune" | "epci" | "commune+epci" | "non_disponible";
+  anneeReference: number;
   diagnostic: string;
-  source: "commune" | "epci" | "commune+epci";
+  niveau: "puissant" | "moyen" | "sous-exploite" | "non_disponible";
 }
 
 // ---- Module 3 — Schéma Digital ----

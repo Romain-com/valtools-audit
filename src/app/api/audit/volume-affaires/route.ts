@@ -7,9 +7,12 @@ export async function POST(request: NextRequest) {
   try {
     const body: VolumeAffairesInput = await request.json();
 
-    if (!body.destination || !body.codeInsee) {
+    if (!body.destination || !body.codeInsee || !body.population) {
       return NextResponse.json(
-        { error: "Les champs 'destination' et 'codeInsee' sont requis." },
+        {
+          error:
+            "Les champs 'destination', 'codeInsee' et 'population' sont requis.",
+        },
         { status: 400 }
       );
     }
@@ -19,7 +22,11 @@ export async function POST(request: NextRequest) {
     try {
       const { data: audit } = await supabase
         .from("audits")
-        .insert({ destination: body.destination, code_insee: body.codeInsee, status: "running" })
+        .insert({
+          destination: body.destination,
+          code_insee: body.codeInsee,
+          status: "running",
+        })
         .select("id")
         .single();
       auditId = audit?.id || null;
@@ -38,7 +45,10 @@ export async function POST(request: NextRequest) {
         });
         await supabase
           .from("audits")
-          .update({ status: "completed", completed_at: new Date().toISOString() })
+          .update({
+            status: "completed",
+            completed_at: new Date().toISOString(),
+          })
           .eq("id", auditId);
       } catch {
         console.warn("[Volume Affaires] Échec sauvegarde Supabase");
