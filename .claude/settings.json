@@ -1,0 +1,6 @@
+{
+  "allow_file_read": true,
+  "allow_file_write": true,
+  "disable_default_mcp": true,
+  "optimize_token_usage": true
+}
