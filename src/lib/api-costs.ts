@@ -30,4 +30,7 @@ export const API_COSTS = {
     promptTokenCost: 0.0000001,
     completionTokenCost: 0.0000004,
   },
+  rapidapi_instagram: {
+    perCall: 0.005,
+  },
 } as const;

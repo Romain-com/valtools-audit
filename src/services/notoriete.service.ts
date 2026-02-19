@@ -1,8 +1,8 @@
-import { NotorieteInput, NotorieteOutput } from "@/types/audit";
-import { askLLMJson } from "@/lib/llm";
+import { NotorieteInput, NotorieteResult } from "@/types/audit";
+import { askLLM, askLLMJson } from "@/lib/llm";
 import { googleMapsSearch, googleSerp } from "@/lib/dataforseo";
 import { getDestinationDescription } from "@/lib/datatourisme";
-import { scrapeHashtagVolume } from "@/lib/apify-instagram";
+import { getInstagramProfile } from "@/lib/rapidapi-instagram";
 import { duckduckgoSearch } from "@/lib/duckduckgo";
 import { trackApiCall } from "@/lib/api-tracker";
 import { API_COSTS } from "@/lib/api-costs";
@@ -18,27 +18,30 @@ import { API_COSTS } from "@/lib/api-costs";
 async function analyserPositionnement(
   destination: string,
   auditId?: string | null
-): Promise<NotorieteOutput["positionnement"]> {
-  // Étape 1 : Chercher la description via Datatourisme
-  let description = await trackApiCall({
+): Promise<NotorieteResult["positionnement"]> {
+  let description: string | null = null;
+  let source: "datatourisme" | "dataforseo_fallback" = "datatourisme";
+
+  // Étape 1 : Datatourisme
+  description = await trackApiCall({
     auditId,
     apiName: "datatourisme",
     call: () => getDestinationDescription(destination),
     estimateCost: () => 0,
   });
 
-  // Étape 2 : Fallback → DataForSEO SERP pour la meta description du site officiel
+  // Étape 2 : Fallback DataForSEO SERP
   if (!description) {
+    source = "dataforseo_fallback";
     try {
       const serpResults = await trackApiCall({
         auditId,
         apiName: "dataforseo",
         endpoint: "google/serp",
-        call: () => googleSerp(`"${destination}" tourisme site officiel`, 5),
+        call: () => googleSerp(`"${destination}" tourisme`, 5),
         estimateCost: () => API_COSTS.dataforseo.serp,
       });
       const items = serpResults[0]?.items || [];
-      // Chercher un résultat qui ressemble au site OT
       const otResult = items.find(
         (item) =>
           item.description &&
@@ -58,51 +61,55 @@ async function analyserPositionnement(
       label: "Non déterminé",
       arguments: ["Aucune description trouvée pour cette destination"],
       ton: "N/A",
+      source,
     };
   }
 
   // Étape 3 : Analyse LLM
   try {
-    const prompt = `Analyse le texte de présentation ci-dessous concernant ${destination}.
+    const prompt = `Analyse le texte de présentation ci-dessous concernant la destination ${destination}.
 Texte : "${description}"
-Identifie en 2-3 phrases : le positionnement dominant (Nature / Sport / Patrimoine / Mer / Montagne / Urbain), les arguments de vente clés, et le ton de communication.
-Sortie JSON : { "label": "...", "arguments": ["...", "..."], "ton": "..." }`;
+Identifie : le positionnement dominant (Nature / Sport / Patrimoine / Mer / Montagne / Urbain), les 2-3 arguments de vente clés, et le ton de communication.
+Sortie JSON stricte : { "label": "...", "arguments": ["...", "..."], "ton": "..." }`;
 
-    return await trackApiCall({
+    const llmResult = await trackApiCall({
       auditId,
       apiName: "openai",
       endpoint: "chat/completions",
       call: () =>
-        askLLMJson<NotorieteOutput["positionnement"]>(
+        askLLMJson<{ label: string; arguments: string[]; ton: string }>(
           prompt,
           "Rôle : Expert en marketing territorial."
         ),
       estimateCost: () =>
-        Math.ceil(prompt.length / 4) * 0.000003 + 200 * 0.000015,
+        Math.ceil(prompt.length / 4) * API_COSTS.openai.promptTokenCost +
+        200 * API_COSTS.openai.completionTokenCost,
     });
+
+    return { ...llmResult, source };
   } catch (error) {
-    console.warn("[Notoriété 1A] LLM échoué, retour description brute:", error);
+    console.warn("[Notoriété 1A] LLM échoué:", error);
     return {
       label: "Analyse LLM indisponible",
       arguments: [description.slice(0, 200)],
       ton: "N/A (LLM indisponible)",
+      source,
     };
   }
 }
 
 /**
  * 1B — E-Réputation (Notes & Avis Google)
- * Source : DataForSEO → Google Maps
+ * Source : DataForSEO → Google Maps Search
  */
 async function analyserEReputation(
   destination: string,
   codePostal: string,
   auditId?: string | null
-): Promise<NotorieteOutput["eReputation"]> {
+): Promise<NotorieteResult["eReputation"]> {
   const query = `Office de Tourisme ${destination} ${codePostal}`;
 
   try {
-    // Récupérer les infos Google Maps
     const mapsResults = await trackApiCall({
       auditId,
       apiName: "dataforseo",
@@ -110,14 +117,15 @@ async function analyserEReputation(
       call: () => googleMapsSearch(query),
       estimateCost: () => API_COSTS.dataforseo.maps,
     });
+
     const items = mapsResults[0]?.items || [];
-    const otItem = items[0]; // Premier résultat = le plus pertinent
+    const otItem = items[0];
 
     if (!otItem || !otItem.rating) {
       return {
-        note: 0,
-        nbAvis: 0,
-        sentiment: 0,
+        note: null,
+        nbAvis: null,
+        sentiment: null,
         synthese: `Aucun Office de Tourisme trouvé sur Google Maps pour "${destination}".`,
       };
     }
@@ -125,71 +133,19 @@ async function analyserEReputation(
     const note = otItem.rating.value || 0;
     const nbAvis = otItem.rating.votes_count || otItem.reviews_count || 0;
 
-    // Récupérer les avis textuels si disponibles
-    let avisTextes: string[] = [];
-    try {
-      const { googleReviews } = await import("@/lib/dataforseo");
-      const reviewsData = await trackApiCall({
-        auditId,
-        apiName: "dataforseo",
-        endpoint: "google/reviews",
-        call: () => googleReviews(query),
-        estimateCost: () => API_COSTS.dataforseo.reviews,
-      });
-      const reviews = reviewsData[0]?.items || [];
-      avisTextes = reviews
-        .slice(0, 5)
-        .map((r) => r.review_text)
-        .filter(Boolean);
-    } catch {
-      // Pas de reviews textuelles, on continue sans
-    }
-
-    // Analyse de sentiment LLM (si on a des avis)
-    if (avisTextes.length > 0) {
-      try {
-        const prompt = `Contexte : Voici les derniers avis laissés sur l'Office de Tourisme de ${destination}.
-Avis :
-${avisTextes.map((a, i) => `${i + 1}. "${a}"`).join("\n")}
-Tâche : Synthétise l'opinion générale en 1 phrase et donne un score de sentiment de -1 (Haine) à +1 (Amour).
-Sortie JSON : { "synthese": "...", "sentiment_score": 0.X }`;
-
-        const sentimentResult = await trackApiCall({
-          auditId,
-          apiName: "openai",
-          endpoint: "chat/completions",
-          call: () =>
-            askLLMJson<{
-              synthese: string;
-              sentiment_score: number;
-            }>(prompt, "Rôle : Analyste satisfaction client."),
-          estimateCost: () =>
-            Math.ceil(prompt.length / 4) * 0.000003 + 200 * 0.000015,
-        });
-
-        return {
-          note,
-          nbAvis,
-          sentiment: sentimentResult.sentiment_score,
-          synthese: sentimentResult.synthese,
-        };
-      } catch {
-        console.warn("[Notoriété 1B] LLM sentiment échoué, fallback algorithmique");
-      }
-    }
-
+    // Pas d'avis textuels via Maps Search → pas d'appel OpenAI
     return {
       note,
       nbAvis,
-      sentiment: note >= 4 ? 0.5 : note >= 3 ? 0 : -0.5,
-      synthese: `Note Google : ${note}/5 basée sur ${nbAvis} avis.`,
+      sentiment: null,
+      synthese: "Pas assez d'avis pour l'analyse",
     };
   } catch (error) {
     console.warn("[Notoriété 1B] Erreur e-réputation:", error);
     return {
-      note: 0,
-      nbAvis: 0,
-      sentiment: 0,
+      note: null,
+      nbAvis: null,
+      sentiment: null,
       synthese: `Impossible de récupérer les données e-réputation pour "${destination}".`,
     };
   }
@@ -197,120 +153,148 @@ Sortie JSON : { "synthese": "...", "sentiment_score": 0.X }`;
 
 /**
  * 1C — Visibilité Sociale (Instagram)
- * Source : Apify (principal) → DuckDuckGo (fallback)
+ * Source : DuckDuckGo (recherche URL) → OpenAI (identification username) → RapidAPI (profil)
  */
 async function analyserVisibiliteSociale(
   destination: string,
   auditId?: string | null
-): Promise<NotorieteOutput["social"]> {
-  const hashtagName = destination
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-zA-Z0-9]/g, "")
-    .toLowerCase();
+): Promise<NotorieteResult["social"]> {
+  let followersOT: number | null = null;
+  let volumeHashtag: number | null = null;
+  let usernameOT: string | null = null;
 
-  // Étape 1 : Volume Hashtag via Apify (principal)
-  let volumeHashtag = 0;
+  // Étape 1 — Chercher les profils Instagram liés via DuckDuckGo
+  let ddgSnippets: string[] = [];
   try {
-    volumeHashtag = await trackApiCall({
+    const ddgResults = await trackApiCall({
       auditId,
-      apiName: "apify",
-      endpoint: "instagram/hashtag",
-      call: () => scrapeHashtagVolume(hashtagName),
-      estimateCost: () => 0.01,
-    });
-  } catch {
-    console.warn("[Notoriété 1C] Apify échoué, fallback DuckDuckGo");
-  }
-
-  // Fallback DuckDuckGo si Apify retourne 0
-  if (volumeHashtag === 0) {
-    try {
-      const ddgResults = await trackApiCall({
-        auditId,
-        apiName: "duckduckgo",
-        call: () =>
-          duckduckgoSearch(
-            `site:instagram.com/explore/tags/ "${hashtagName}"`
-          ),
-        estimateCost: () => 0,
-      });
-      // Estimation basique : si on trouve des résultats, la destination a une présence
-      volumeHashtag = ddgResults.length > 0 ? ddgResults.length * 100 : 0;
-    } catch {
-      // Continue avec 0
-    }
-  }
-
-  // Étape 2 : Rechercher le compte Instagram OT
-  let followersOT = 0;
-  try {
-    const serpResults = await trackApiCall({
-      auditId,
-      apiName: "dataforseo",
-      endpoint: "google/serp",
+      apiName: "duckduckgo",
       call: () =>
-        googleSerp(`Instagram Office de Tourisme ${destination}`, 5),
-      estimateCost: () => API_COSTS.dataforseo.serp,
+        duckduckgoSearch(`site:instagram.com Office Tourisme ${destination}`),
+      estimateCost: () => 0,
     });
-    const items = serpResults[0]?.items || [];
-    const instagramResult = items.find((item) =>
-      item.url.includes("instagram.com")
-    );
 
-    if (instagramResult) {
-      // Extraire le nombre de followers du snippet Google
-      const descr = instagramResult.description || "";
-      const match = descr.match(
-        /([\d,.]+[KkMm]?)\s*(?:Followers|abonnés|follower)/i
-      );
-      if (match) {
-        followersOT = parseFollowerCount(match[1]);
+    ddgSnippets = ddgResults
+      .filter((r) => r.url.includes("instagram.com"))
+      .map((r) => `${r.title} — ${r.url} — ${r.snippet}`);
+  } catch {
+    console.warn("[Notoriété 1C] Recherche DuckDuckGo échouée");
+  }
+
+  // Étape 2 — Demander à OpenAI d'identifier le bon username
+  if (ddgSnippets.length > 0) {
+    try {
+      const prompt = `Voici des résultats de recherche Instagram pour l'Office de Tourisme de ${destination} :
+${ddgSnippets.map((s, i) => `${i + 1}. ${s}`).join("\n")}
+
+Quel est le username Instagram (sans @) du compte officiel de l'Office de Tourisme ou de la destination ${destination} ?
+S'il n'y a pas de compte officiel évident, retourne le compte le plus pertinent lié au tourisme de ${destination}.
+Sortie JSON stricte : { "username": "..." }
+Si aucun résultat n'est pertinent : { "username": null }`;
+
+      const llmResult = await trackApiCall({
+        auditId,
+        apiName: "openai",
+        endpoint: "chat/completions",
+        call: () =>
+          askLLMJson<{ username: string | null }>(
+            prompt,
+            "Rôle : Expert en réseaux sociaux et tourisme."
+          ),
+        estimateCost: () =>
+          Math.ceil(prompt.length / 4) * API_COSTS.openai.promptTokenCost +
+          100 * API_COSTS.openai.completionTokenCost,
+      });
+
+      usernameOT = llmResult.username || null;
+    } catch {
+      console.warn("[Notoriété 1C] LLM identification username échouée");
+      // Fallback : prendre le premier lien instagram.com trouvé
+      for (const snippet of ddgSnippets) {
+        const match = snippet.match(/instagram\.com\/([a-zA-Z0-9_.]+)/);
+        if (match && !["explore", "p", "reel", "stories"].includes(match[1])) {
+          usernameOT = match[1];
+          break;
+        }
       }
     }
-  } catch {
-    console.warn("[Notoriété 1C] Recherche followers OT échouée");
   }
 
-  // Étape 3 : Calcul Ratio Hype
-  const ratioHype =
-    followersOT > 0 ? Math.round((volumeHashtag / followersOT) * 100) / 100 : 0;
+  // Étape 3 — Récupérer le profil Instagram via RapidAPI
+  if (usernameOT) {
+    const profile = await getInstagramProfile(usernameOT, auditId);
+    if (profile) {
+      followersOT = profile.followerCount;
+      volumeHashtag = profile.mediaCount;
+    }
+  }
 
-  // Étape 4 : Diagnostic algorithmique
-  let diagnostic: string;
-  if (volumeHashtag < 1000) {
-    diagnostic = "Destination confidentielle ou déficit d'image";
-  } else if (volumeHashtag > 5000 && followersOT < 1000) {
-    diagnostic = "Potentiel viral inexploité par l'OT";
-  } else if (volumeHashtag > 5000 && followersOT > 1000) {
-    diagnostic = "Destination connectée";
-  } else if (ratioHype > 100) {
-    diagnostic =
-      "La destination est virale (les visiteurs postent bien plus que l'OT)";
-  } else if (ratioHype < 1 && ratioHype > 0) {
-    diagnostic = "Destination socialement inactive";
+  // Étape 4 — Diagnostic algorithmique (basé sur les followers)
+  let diagnosticCalcule: string;
+  if (followersOT === null) {
+    diagnosticCalcule = "Données Instagram indisponibles";
+  } else if (followersOT < 1000) {
+    diagnosticCalcule = "Destination confidentielle ou déficit d'image";
+  } else if (followersOT > 5000) {
+    diagnosticCalcule = "Destination connectée";
   } else {
-    diagnostic = "Visibilité sociale modérée";
+    diagnosticCalcule = "Visibilité sociale modérée";
+  }
+
+  // Étape 5 — Calcul Ratio Hype
+  let ratioHype: number | null = null;
+  if (volumeHashtag !== null && followersOT !== null && followersOT > 0) {
+    ratioHype = Math.round((volumeHashtag / followersOT) * 100) / 100;
+  }
+
+  // Étape 6 — Phrase finale rapport via OpenAI
+  let phraseFinalRapport = diagnosticCalcule;
+  try {
+    const prompt = `Contexte : Destination ${destination}.
+Données :
+- Compte Instagram OT : @${usernameOT ?? "non trouvé"}
+- Followers OT : ${followersOT ?? "inconnu"} abonnés
+- Posts publiés : ${volumeHashtag ?? "inconnu"}
+- Diagnostic calculé : ${diagnosticCalcule}
+Tâche : Rédige une phrase de diagnostic percutante pour un rapport de conseil destiné à un élu.
+Sortie : Une seule phrase, sans JSON.`;
+
+    phraseFinalRapport = await trackApiCall({
+      auditId,
+      apiName: "openai",
+      endpoint: "chat/completions",
+      call: () =>
+        askLLM(
+          prompt,
+          "Rôle : Consultant en stratégie digitale territoriale."
+        ),
+      estimateCost: () =>
+        Math.ceil(prompt.length / 4) * API_COSTS.openai.promptTokenCost +
+        100 * API_COSTS.openai.completionTokenCost,
+    });
+
+    // askLLM retourne du JSON forcé — extraire la phrase si wrappée
+    try {
+      const parsed = JSON.parse(phraseFinalRapport);
+      if (typeof parsed === "object" && parsed !== null) {
+        phraseFinalRapport =
+          parsed.phrase || parsed.diagnostic || parsed.text || parsed.result ||
+          Object.values(parsed)[0] || diagnosticCalcule;
+      }
+    } catch {
+      // Déjà une string brute, c'est OK
+    }
+  } catch {
+    console.warn("[Notoriété 1C] LLM phrase finale échouée");
   }
 
   return {
     volumeHashtag,
     followersOT,
     ratioHype,
-    diagnostic,
+    diagnosticCalcule,
+    phraseFinalRapport: String(phraseFinalRapport).trim(),
   };
-}
-
-function parseFollowerCount(raw: string): number {
-  const cleaned = raw.replace(/,/g, "").replace(/\s/g, "");
-  const multiplierMatch = cleaned.match(/^([\d.]+)([KkMm])$/);
-  if (multiplierMatch) {
-    const num = parseFloat(multiplierMatch[1]);
-    const unit = multiplierMatch[2].toUpperCase();
-    if (unit === "K") return Math.round(num * 1_000);
-    if (unit === "M") return Math.round(num * 1_000_000);
-  }
-  return parseInt(cleaned, 10) || 0;
 }
 
 // ============================================
@@ -320,19 +304,14 @@ function parseFollowerCount(raw: string): number {
 export async function runNotoriete(
   input: NotorieteInput,
   auditId?: string | null
-): Promise<NotorieteOutput> {
+): Promise<NotorieteResult> {
   const { destination, codePostal } = input;
 
-  // Exécution parallèle des 3 sous-modules
   const [positionnement, eReputation, social] = await Promise.all([
     analyserPositionnement(destination, auditId),
     analyserEReputation(destination, codePostal, auditId),
     analyserVisibiliteSociale(destination, auditId),
   ]);
 
-  return {
-    positionnement,
-    eReputation,
-    social,
-  };
+  return { positionnement, eReputation, social };
 }

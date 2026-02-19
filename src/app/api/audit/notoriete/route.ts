@@ -4,31 +4,32 @@ import { supabase } from "@/lib/supabase";
 import type { NotorieteInput } from "@/types/audit";
 
 export async function POST(request: NextRequest) {
+  let auditId: string | null = null;
+
   try {
     const body: NotorieteInput = await request.json();
 
     // Validation input
-    if (!body.destination || !body.codePostal) {
+    if (!body.destination || !body.codePostal || !body.codeInsee) {
       return NextResponse.json(
-        { error: "Les champs 'destination' et 'codePostal' sont requis." },
+        { error: "Les champs 'destination', 'codePostal' et 'codeInsee' sont requis." },
         { status: 400 }
       );
     }
 
-    // Créer ou récupérer l'audit dans Supabase
-    let auditId: string | null = null;
+    // Créer l'audit dans Supabase
     try {
       const { data: audit } = await supabase
         .from("audits")
         .insert({
           destination: body.destination,
+          code_insee: body.codeInsee,
           status: "running",
         })
         .select("id")
         .single();
       auditId = audit?.id || null;
     } catch {
-      // Supabase non configuré — on continue sans persistance
       console.warn("[Notoriété] Supabase non disponible, mode sans persistance");
     }
 
@@ -61,6 +62,18 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error("[Notoriété] Erreur:", error);
+
+    // Mettre à jour le statut en erreur si possible
+    if (auditId) {
+      try {
+        await supabase
+          .from("audits")
+          .update({ status: "error" })
+          .eq("id", auditId);
+      } catch {
+        // Silencieux
+      }
+    }
 
     const message =
       error instanceof Error ? error.message : "Erreur interne";

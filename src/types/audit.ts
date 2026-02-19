@@ -15,25 +15,28 @@ export interface AuditInput {
 export interface NotorieteInput {
   destination: string;
   codePostal: string;
+  codeInsee: string;
 }
 
-export interface NotorieteOutput {
+export interface NotorieteResult {
   positionnement: {
     label: string;
     arguments: string[];
     ton: string;
+    source: "datatourisme" | "dataforseo_fallback";
   };
   eReputation: {
-    note: number;
-    nbAvis: number;
-    sentiment: number;
+    note: number | null;
+    nbAvis: number | null;
+    sentiment: number | null;
     synthese: string;
   };
   social: {
-    volumeHashtag: number;
-    followersOT: number;
-    ratioHype: number;
-    diagnostic: string;
+    volumeHashtag: number | null;
+    followersOT: number | null;
+    ratioHype: number | null;
+    diagnosticCalcule: string;
+    phraseFinalRapport: string;
   };
 }
 

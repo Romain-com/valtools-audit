@@ -26,10 +26,15 @@ export async function scrapeHashtagVolume(
   try {
     const client = getClient();
 
+    const cleanTag = hashtag.replace("#", "");
     const run = await client.actor(HASHTAG_SCRAPER_ACTOR).call(
       {
-        hashtags: [hashtag.replace("#", "")],
+        addParentData: false,
+        directUrls: [`https://www.instagram.com/explore/tags/${cleanTag}/`],
         resultsLimit: 1,
+        resultsType: "mentions",
+        searchLimit: 1,
+        searchType: "hashtag",
       },
       { timeout: 60 }
     );
