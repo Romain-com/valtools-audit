@@ -1,1 +1,17 @@
 /ressources/
+/DATA Tourisme/
+
+# Environnement
+.env
+.env.local
+
+# Dépendances
+node_modules/
+microservice/node_modules/
+
+# Next.js
+.next/
+tsconfig.tsbuildinfo
+
+# Mac
+.DS_Store
