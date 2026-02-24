@@ -552,7 +552,7 @@ types/volume-affaires.ts            → DonneesCollecteur + ResultatVolumeAffair
 **Pièges résolus** :
 - Code INSEE Vanves = `92075` (pas 92078 — vérifier toujours via `GET /communes?nom=XXX`)
 - Annecy ne collecte pas en direct → bascule automatique sur la CA Grand Annecy (SIREN 200066793)
-- SIREN Annecy `200063402` absent des balances communes (commence par 200 → format EPCI)
+- SIREN Annecy `200063402` absent des balances communes car c'est l'EPCI qui collecte la taxe, pas la commune directement (le SIREN commençant par 200 est valide pour les communes fusionnées — ce n'est pas un indicateur de nature EPCI)
 
 **Coût du bloc** :
 ```
