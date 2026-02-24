@@ -10,4 +10,5 @@ export const API_COSTS = {
   haloscan: 0.01,               // par appel (1 crédit)
   pagespeed: 0,                 // gratuit (API Google)
   monitorank: 0,                // inclus dans le forfait
+  data_economie: 0,             // API publique gratuite
 } as const

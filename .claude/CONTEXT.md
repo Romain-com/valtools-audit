@@ -1,5 +1,5 @@
 # CONTEXT.MD — Destination Digital Audit App
-> Dernière mise à jour : Phase 2 — Bloc 1 Positionnement & Notoriété créé et validé (2026-02-24)
+> Dernière mise à jour : Phase 2 — Bloc 2 Volume d'affaires créé et validé (2026-02-24)
 > Destination de test de référence : **Annecy** | Domaine OT : `lac-annecy.com`
 
 ---
@@ -496,10 +496,74 @@ const API_COSTS = {
 }                               // Total bloc ≈ 0.108 €
 ```
 
+#### Bloc 2 — Volume d'affaires (taxe de séjour) ✅ TERMINÉ (2026-02-24)
+
+**Architecture** :
+```
+microservice/routes/epci.ts         → GET /epci?code_insee=XXX (nouveau endpoint)
+
+app/api/blocs/volume-affaires/
+├── epci/route.ts    → Proxy microservice → résolution EPCI
+├── taxe/route.ts    → data.economie.gouv.fr (communes + groupements)
+└── openai/route.ts  → GPT-4o-mini (synthèse + indicateurs + part commune)
+
+lib/blocs/volume-affaires.ts        → Orchestrateur du bloc
+types/volume-affaires.ts            → DonneesCollecteur + ResultatVolumeAffaires
+```
+
+**Source CSV EPCI** :
+- `ressources/table-appartenance-geo-communes-2025/COM-Tableau 1.csv` (ex-xlsx converti)
+- Délimiteur `;`, métadonnées lignes 1-5, en-tête `CODGEO;LIBGEO;...` à la ligne 6
+- Parsing : `csv-parse/sync` avec `from_line: 6, delimiter: ';'`
+- Chargement synchrone au démarrage → 34 871 communes associées à 1 263 EPCI
+
+**Flux orchestrateur** :
+```
+1. GET /epci         → microservice (code_insee → siren_epci + infos)
+2. Promise.all([
+     POST /taxe (commune),
+     POST /taxe (epci) si siren_epci présent
+   ])
+3. Sélection collecteur : commune si montant > 0, sinon epci, sinon taxe_non_instituee
+4. POST /openai      → synthèse + 3 indicateurs + part_commune si EPCI
+5. enregistrerCoutsBloc() → Supabase fire & forget
+```
+
+**Logique collecteur** :
+- La commune collecte en direct → `type_collecteur: 'commune'`
+- Pas de taxe commune mais EPCI a des données → `type_collecteur: 'epci'` + estimation part OpenAI
+- Aucune donnée → `taxe_non_instituee: true` (pas d'appel OpenAI)
+
+**Datasets data.economie.gouv.fr** :
+- Communes : `balances-comptables-des-communes-en-2024` (fallback 2023)
+- EPCI : `balances-comptables-des-groupements-a-fiscalite-propre-depuis-2010` (filtre `exer='2024'`, fallback 2023)
+- Filtre ODSQL : `compte='731721' OR compte='731722'` (taxe de séjour + forfaitaire)
+- `obnetcre` peut être null → traité comme 0, plusieurs lignes additionnées
+
+**nuitées_estimées** = `Math.round(montant_taxe_euros / 1.50)`
+
+**Tests validés — test-bloc2.js** :
+
+| Cas | Collecteur | Montant | Nuitées | Durée |
+|---|---|---|---|---|
+| Vanves (INSEE 92075) | Commune directe | **739 764 €** (2024) | 493 177 | 3.7s |
+| Annecy (INSEE 74010) | CA Grand Annecy | **3 440 837 €** (2024) | 2 293 891 | 5.8s |
+
+**Pièges résolus** :
+- Code INSEE Vanves = `92075` (pas 92078 — vérifier toujours via `GET /communes?nom=XXX`)
+- Annecy ne collecte pas en direct → bascule automatique sur la CA Grand Annecy (SIREN 200066793)
+- SIREN Annecy `200063402` absent des balances communes (commence par 200 → format EPCI)
+
+**Coût du bloc** :
+```
+data.economie.gouv.fr : gratuit
+OpenAI gpt-4o-mini   : 1 appel = 0.001 €
+Total bloc           : 0.001 €
+```
+
 #### Blocs suivants à implémenter
-2. DataForSEO SERP (schéma digital + mots-clés + PAA + Top 10)
-3. OpenAI (hashtags + concurrents + contenus)
-4. data.economie.gouv.fr (taxe de séjour)
+3. DataForSEO SERP (schéma digital + mots-clés + PAA + Top 10)
+4. OpenAI (hashtags + concurrents + contenus)
 5. Haloscan (visibilité SEO)
 6. Monitorank (contexte algo)
 7. Google PageSpeed (Core Web Vitals)
@@ -569,3 +633,4 @@ DATA_TOURISME_API_URL=http://localhost:3001
 | `test-hashtag-stats.js` | Validation finale — apify/instagram-hashtag-stats |
 | `test-bloc1.js` | Bloc 1 — test standalone Annecy (flux complet sans Next.js) |
 | `test-trevoux.js` | Bloc 1 — test intégration Trévoux (vraies APIs, microservice requis) |
+| `test-bloc2.js` | Bloc 2 — test Vanves + Annecy (taxe de séjour, microservice requis) |

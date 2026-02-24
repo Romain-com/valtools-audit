@@ -5,6 +5,7 @@ import { chargerCSVCommunes } from './services/csv-reader'
 import { chargerOuConstruireIndex } from './services/datatourisme'
 import routesCommunes from './routes/communes'
 import routesPOI from './routes/poi'
+import routesEPCI from './routes/epci'
 
 const app = express()
 const PORT = parseInt(process.env.PORT || '3001', 10)
@@ -37,6 +38,7 @@ try {
 // Routes
 app.use('/communes', routesCommunes)
 app.use('/poi', routesPOI)
+app.use('/epci', routesEPCI)
 
 // Route de santé — utile pour vérifier que le serveur répond
 app.get('/health', (_req, res) => {
