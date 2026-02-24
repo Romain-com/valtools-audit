@@ -692,10 +692,10 @@ interface AnalyseSiteOT {
 
 **Tests validés** :
 
-| Destination | OT détecté | Score visibilité | total_keywords (DataForSEO) | PageSpeed mobile |
-|---|---|---|---|---|
-| Annecy | lac-annecy.com | 2/5 | 25 487 | 48/100 |
-| Trévoux | ars-trevoux.com | 2/5 | — (Haloscan direct) | mobile+desktop CLS critique (0.95) |
+| Destination | OT détecté | Score visibilité | total_keywords | source | PageSpeed mobile |
+|---|---|---|---|---|---|
+| Annecy | lac-annecy.com | 2/5 | 53 842 | haloscan (www) | 51/100 |
+| Trévoux | ars-trevoux.com | 2/5 | — | Haloscan direct | mobile+desktop CLS critique (0.95) |
 
 **Pièges résolus** :
 - **Classification JSON tronqué** : tronquer titre (80 chars) + meta_description (100 chars) dans le prompt, `max_tokens: 1500` — sinon erreur "Unterminated string" pour 10+ résultats
@@ -704,6 +704,7 @@ interface AnalyseSiteOT {
 - **Haloscan nu vs www** : Haloscan indexe parfois uniquement `www.` — retry automatique implémenté dans `haloscan/route.ts`
 - **Haloscan zéros silencieux** : peut retourner métriques à 0 sans `SITE_NOT_FOUND` (limite de plan) → fallback DataForSEO déclenché par l'orchestrateur
 - **PageSpeed variabilité** : LCP peut varier entre runs selon charge serveur — mentionner dans l'UI comme "mesure indicative"
+- **Haloscan metrics.stats** : toutes les métriques sont sous `metrics.stats` (niveau intermédiaire), pas directement sous `metrics`. `traffic_value` retourne `"NA"` (string) → normaliser en 0. `failure_reason` remplace `errorCode === 'SITE_NOT_FOUND'` pour détecter un domaine absent. ⚠️ `test-bloc3.js` appelle Haloscan directement (bypass Next.js) — les deux fichiers doivent être synchronisés.
 
 **⚠️ DataForSEO domain_rank_overview — chemin de parsing critique** :
 ```javascript
