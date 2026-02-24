@@ -694,7 +694,7 @@ interface AnalyseSiteOT {
 
 | Destination | OT détecté | Score visibilité | total_keywords | source | PageSpeed mobile |
 |---|---|---|---|---|---|
-| Annecy | lac-annecy.com | 2/5 | 53 842 | haloscan (www) | 51/100 |
+| Annecy | lac-annecy.com | 1/5 | 53 842 | haloscan (www) | 51/100 |
 | Trévoux | ars-trevoux.com | 2/5 | — | Haloscan direct | mobile+desktop CLS critique (0.95) |
 
 **Pièges résolus** :
