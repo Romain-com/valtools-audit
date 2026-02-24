@@ -153,7 +153,18 @@ POST https://api.haloscan.com/api/domains/overview
 Headers: { "haloscan-api-key": "TOKEN" }
 Body: { "input": "lac-annecy.com", "mode": "domain", "requested_data": ["metrics", "best_keywords", "best_pages"] }
 ```
-Champs utiles : `metrics.total_keyword_count`, `metrics.total_traffic`, `metrics.top_3_positions`, `metrics.top_10_positions`, `metrics.visibility_index`, `metrics.traffic_value`
+**⚠️ Niveau intermédiaire `stats` obligatoire** — structure réelle validée sur `www.lac-annecy.com` :
+```json
+{ "metrics": { "stats": { "total_keyword_count": 53842, "total_traffic": 161645, ... }, "failure_reason": null } }
+```
+```javascript
+// ✅ CORRECT
+const metrics = response.data.metrics?.stats
+// ❌ FAUX (retourne undefined pour tous les champs)
+const metrics = response.data.metrics
+```
+Champs utiles (sous `metrics.stats`) : `total_keyword_count`, `total_traffic`, `top_3_positions`, `top_10_positions`, `visibility_index`, `traffic_value`
+⚠️ `traffic_value` retourne la string `"NA"` — normaliser en `0` : `typeof v === 'number' ? v : 0`
 
 **Coût** : 1 crédit site/appel — ~2 972 crédits/mois renouvelables. ⚠️ Le crédit est consommé même si la réponse est `SITE_NOT_FOUND`.
 
@@ -171,8 +182,10 @@ Résultat : domaine original toujours conservé dans l'objet retourné
 
 **Condition "vide"** (dans `haloscan/route.ts`) :
 ```javascript
-const estVide = metrics.errorCode === 'SITE_NOT_FOUND' ||
-                (!metrics.total_keyword_count && !metrics.total_traffic)
+const estVide =
+  (data.metrics?.failure_reason !== null && data.metrics?.failure_reason !== undefined) ||
+  (!metrics.total_keyword_count && !metrics.total_traffic)
+// ⚠️ failure_reason remplace errorCode === 'SITE_NOT_FOUND' (structure réelle validée)
 ```
 
 Les données de trafic sous-représentent le trafic FR — fiable pour comparaisons relatives uniquement.

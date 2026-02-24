@@ -37,9 +37,10 @@ async function appelerHaloscan(
     { headers: { 'haloscan-api-key': apiKey }, timeout: TIMEOUT_MS }
   )
 
-  const metrics = (response.data.metrics as Record<string, number | string>) ?? {}
+  // ⚠️ Niveau intermédiaire obligatoire : metrics.stats (validé sur réponse réelle www.lac-annecy.com)
+  const metrics = (response.data.metrics?.stats as Record<string, number | string>) ?? {}
   const estVide =
-    metrics.errorCode === 'SITE_NOT_FOUND' ||
+    (response.data.metrics?.failure_reason !== null && response.data.metrics?.failure_reason !== undefined) ||
     (!metrics.total_keyword_count && !metrics.total_traffic)
 
   if (estVide) {
@@ -55,7 +56,8 @@ async function appelerHaloscan(
       top_3_positions: (metrics.top_3_positions as number) ?? 0,
       top_10_positions: (metrics.top_10_positions as number) ?? 0,
       visibility_index: (metrics.visibility_index as number) ?? 0,
-      traffic_value: (metrics.traffic_value as number) ?? 0,
+      // traffic_value retourne "NA" (string) dans Haloscan — normalisation en 0
+      traffic_value: typeof metrics.traffic_value === 'number' ? metrics.traffic_value : 0,
       site_non_indexe: false,
       source: 'haloscan',
     },
