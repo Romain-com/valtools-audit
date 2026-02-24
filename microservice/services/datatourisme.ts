@@ -1,11 +1,17 @@
 import fs from 'fs'
 import path from 'path'
-import { IndexPOI, POIResult } from '../types'
+import { POIResult } from '../types'
 
-// Index principal : code_insee → liste de POI légers
-const indexParInsee = new Map<string, IndexPOI[]>()
+// Chemin du fichier cache de l'index communes
+const CACHE_PATH = path.join(__dirname, '../cache/index-communes.json')
 
-// Flag indiquant si l'indexation est terminée
+// Chemin du dossier DATA Tourisme
+const DATA_PATH = process.env.DATA_TOURISME_PATH || ''
+
+// Index en RAM : code_insee → liste de filepaths vers les fichiers JSON
+const indexParInsee = new Map<string, string[]>()
+
+// Flag indiquant si l'index est prêt à être interrogé
 let indexPret = false
 
 /**
@@ -13,6 +19,14 @@ let indexPret = false
  */
 export function isIndexPret(): boolean {
   return indexPret
+}
+
+// Structure du fichier cache JSON sur disque
+interface CacheData {
+  generated_at: string
+  total_fichiers: number
+  total_communes: number
+  index: Record<string, string[]>
 }
 
 /**
@@ -45,114 +59,119 @@ function listerFichiersJson(dossier: string): string[] {
 }
 
 /**
- * Extrait les champs utiles d'un fichier JSON DATA Tourisme.
- * Retourne null si les données sont incomplètes ou malformées.
+ * Construit l'index code_insee → filepaths en scannant les 489k fichiers.
+ * Persiste le résultat dans CACHE_PATH et charge l'index en RAM.
+ * Appelé uniquement si le cache n'existe pas encore.
  */
-function extraireEntreeIndex(filepath: string, data: Record<string, unknown>): IndexPOI | null {
-  try {
-    // Nom : rdfs:label.fr[0]
-    const labelFr = (data['rdfs:label'] as Record<string, string[]> | undefined)?.['fr']
-    const nom = labelFr?.[0]
-    if (!nom) return null
+async function construireIndex(): Promise<void> {
+  // Créer le dossier cache s'il n'existe pas
+  const cacheDir = path.dirname(CACHE_PATH)
+  if (!fs.existsSync(cacheDir)) {
+    fs.mkdirSync(cacheDir, { recursive: true })
+  }
 
-    // Types : @type filtré — on garde uniquement les valeurs sans préfixe "schema:"
-    const typesRaw = data['@type'] as string[] | undefined
-    if (!typesRaw || typesRaw.length === 0) return null
-    const types = typesRaw.filter((t) => !t.startsWith('schema:'))
-    if (types.length === 0) return null
+  console.log(`[DataTourisme] Scan des fichiers depuis : ${DATA_PATH}`)
+  const fichiers = listerFichiersJson(DATA_PATH)
+  const total = fichiers.length
+  console.log(`[DataTourisme] ${total} fichiers JSON trouvés — construction de l'index...`)
 
-    // Localisation : isLocatedAt[0]
-    const isLocatedAt = data['isLocatedAt'] as Record<string, unknown>[] | undefined
-    if (!isLocatedAt || isLocatedAt.length === 0) return null
-    const lieu = isLocatedAt[0]
+  const indexTemp = new Map<string, string[]>()
+  let nbIndexes = 0
 
-    // Code INSEE : isLocatedAt[0].schema:address[0].hasAddressCity.insee
-    const adresses = lieu['schema:address'] as Record<string, unknown>[] | undefined
-    if (!adresses || adresses.length === 0) return null
-    const adresse = adresses[0]
-    const ville = adresse['hasAddressCity'] as Record<string, string> | undefined
-    const code_insee = ville?.['insee']
-    if (!code_insee) return null
+  for (let i = 0; i < fichiers.length; i++) {
+    // Log de progression toutes les 10 000 fichiers
+    if (i > 0 && i % 10000 === 0) {
+      console.log(`[DataTourisme] Progression : ${i}/${total} fichiers...`)
+    }
 
-    // GPS : isLocatedAt[0].schema:geo
-    const geo = lieu['schema:geo'] as Record<string, string> | undefined
-    if (!geo) return null
-    const latitude = parseFloat(geo['schema:latitude'])
-    const longitude = parseFloat(geo['schema:longitude'])
-    if (isNaN(latitude) || isNaN(longitude)) return null
+    const filepath = fichiers[i]
+    try {
+      const contenu = fs.readFileSync(filepath, 'utf-8')
+      const data = JSON.parse(contenu) as Record<string, unknown>
 
-    return { nom, types, code_insee, latitude, longitude, filepath }
-  } catch {
-    // Champ manquant ou structure inattendue — on ignore ce fichier
-    return null
+      // Extraction du code INSEE uniquement — on ne lit pas les autres champs
+      const locatedAt = data['isLocatedAt'] as Record<string, unknown>[] | undefined
+      const adresse = locatedAt?.[0]?.['schema:address'] as Record<string, unknown>[] | undefined
+      const ville = adresse?.[0]?.['hasAddressCity'] as Record<string, string> | undefined
+      const insee = ville?.['insee']
+
+      if (!insee) continue
+
+      if (!indexTemp.has(insee)) indexTemp.set(insee, [])
+      indexTemp.get(insee)!.push(filepath)
+      nbIndexes++
+    } catch {
+      // Fichier corrompu ou JSON invalide — on ignore
+    }
+  }
+
+  // Sérialisation en objet plain pour JSON.stringify
+  const indexObj: Record<string, string[]> = {}
+  for (const [insee, paths] of indexTemp) {
+    indexObj[insee] = paths
+  }
+
+  const cacheData: CacheData = {
+    generated_at: new Date().toISOString(),
+    total_fichiers: total,
+    total_communes: indexTemp.size,
+    index: indexObj,
+  }
+
+  fs.writeFileSync(CACHE_PATH, JSON.stringify(cacheData))
+  console.log(
+    `[DataTourisme] Index construit et sauvegardé — ${indexTemp.size} communes, ${nbIndexes} fichiers indexés`
+  )
+
+  // Charger immédiatement en RAM
+  for (const [insee, paths] of indexTemp) {
+    indexParInsee.set(insee, paths)
   }
 }
 
 /**
- * Lance l'indexation complète en arrière-plan.
- * Appelée une seule fois au démarrage — ne bloque pas le serveur.
+ * Charge l'index depuis le cache disque si disponible, sinon le construit.
+ * Appelée au démarrage du microservice — remplace lancerIndexation().
  */
-export async function lancerIndexation(datatourismePath: string): Promise<void> {
-  console.log(`[DataTourisme] Démarrage de l'indexation depuis : ${datatourismePath}`)
-
-  // On tourne dans un setImmediate pour ne pas bloquer la boucle d'événement au démarrage
-  setImmediate(async () => {
+export async function chargerOuConstruireIndex(): Promise<void> {
+  if (fs.existsSync(CACHE_PATH)) {
+    console.log('[DataTourisme] Cache détecté — chargement...')
+    const debut = Date.now()
     try {
-      const fichiers = listerFichiersJson(datatourismePath)
-      const total = fichiers.length
-      console.log(`[DataTourisme] ${total} fichiers JSON trouvés — indexation en cours...`)
+      const contenu = fs.readFileSync(CACHE_PATH, 'utf-8')
+      const cache = JSON.parse(contenu) as CacheData
 
-      let nbIndexes = 0
-      let nbIgnores = 0
-
-      for (let i = 0; i < fichiers.length; i++) {
-        const filepath = fichiers[i]
-
-        // Log de progression toutes les 10 000 fichiers
-        if (i > 0 && i % 10000 === 0) {
-          console.log(`[DataTourisme] Indexation : ${i}/${total} fichiers...`)
-        }
-
-        try {
-          const contenu = fs.readFileSync(filepath, 'utf-8')
-          const data = JSON.parse(contenu) as Record<string, unknown>
-          const entree = extraireEntreeIndex(filepath, data)
-
-          if (entree) {
-            if (!indexParInsee.has(entree.code_insee)) {
-              indexParInsee.set(entree.code_insee, [])
-            }
-            indexParInsee.get(entree.code_insee)!.push(entree)
-            nbIndexes++
-          } else {
-            nbIgnores++
-          }
-        } catch {
-          // Fichier corrompu ou JSON invalide — on passe sans stopper l'indexation
-          nbIgnores++
-        }
+      for (const [insee, paths] of Object.entries(cache.index)) {
+        indexParInsee.set(insee, paths)
       }
 
+      const ms = Date.now() - debut
+      console.log(`[DataTourisme] Cache chargé — ${cache.total_communes} communes en ${ms}ms`)
       indexPret = true
-      const nbCommunes = indexParInsee.size
-      console.log(
-        `[DataTourisme] Index prêt — ${total} fichiers traités, ${nbIndexes} indexés, ` +
-        `${nbIgnores} ignorés, ${nbCommunes} communes couvertes`
-      )
     } catch (err) {
-      console.error('[DataTourisme] Erreur fatale lors de l\'indexation :', err)
+      console.error('[DataTourisme] Cache corrompu — reconstruction depuis les fichiers sources...', err)
+      await construireIndex()
+      indexPret = true
+    }
+  } else {
+    console.log('[DataTourisme] Pas de cache — construction de l\'index (première utilisation)...')
+    try {
+      await construireIndex()
+      indexPret = true
+    } catch (err) {
+      console.error('[DataTourisme] Erreur fatale lors de la construction de l\'index :', err)
       // On marque quand même comme prêt pour ne pas bloquer les requêtes indéfiniment
       indexPret = true
     }
-  })
+  }
 }
 
 /**
  * Retourne les POI d'une commune filtrés par type.
- * Retourne [] si la commune est absente de l'index ou si l'index n'est pas prêt.
+ * Lit les fichiers JSON individuellement à la demande (pas de données en RAM hors filepaths).
  *
  * @param code_insee - Code INSEE de la commune
- * @param types - Types à inclure (au moins un doit correspondre)
+ * @param types - Types à inclure (vide = tous les types acceptés)
  * @param limit - Nombre maximum de résultats (max 50)
  */
 export function getPOIParCommune(
@@ -160,24 +179,52 @@ export function getPOIParCommune(
   types: string[],
   limit: number
 ): POIResult[] {
-  const pois = indexParInsee.get(code_insee)
-  if (!pois) return []
+  const filepaths = indexParInsee.get(code_insee)
+  if (!filepaths || filepaths.length === 0) return []
 
   const resultats: POIResult[] = []
 
-  for (const poi of pois) {
+  for (const filepath of filepaths) {
     if (resultats.length >= limit) break
 
-    // Vérification : au moins un des types demandés est présent dans les types du POI
-    const correspond = types.length === 0 || poi.types.some((t) => types.includes(t))
-    if (!correspond) continue
+    try {
+      const contenu = fs.readFileSync(filepath, 'utf-8')
+      const data = JSON.parse(contenu) as Record<string, unknown>
 
-    resultats.push({
-      nom: poi.nom,
-      type_principal: poi.types[0] ?? 'PointOfInterest',
-      latitude: poi.latitude,
-      longitude: poi.longitude,
-    })
+      // Nom : rdfs:label.fr[0]
+      const labelFr = (data['rdfs:label'] as Record<string, string[]> | undefined)?.['fr']
+      const nom = labelFr?.[0]
+      if (!nom) continue
+
+      // Types : @type filtré — on garde uniquement les valeurs sans préfixe "schema:"
+      const typesRaw = data['@type'] as string[] | undefined
+      if (!typesRaw || typesRaw.length === 0) continue
+      const typesFiltres = typesRaw.filter((t) => !t.startsWith('schema:'))
+      if (typesFiltres.length === 0) continue
+
+      // Vérification de l'inclusion (logique existante — inchangée)
+      const correspond = types.length === 0 || typesFiltres.some((t) => types.includes(t))
+      if (!correspond) continue
+
+      // GPS : isLocatedAt[0].schema:geo
+      const isLocatedAt = data['isLocatedAt'] as Record<string, unknown>[] | undefined
+      if (!isLocatedAt || isLocatedAt.length === 0) continue
+      const lieu = isLocatedAt[0]
+      const geo = lieu['schema:geo'] as Record<string, string> | undefined
+      if (!geo) continue
+      const latitude = parseFloat(geo['schema:latitude'])
+      const longitude = parseFloat(geo['schema:longitude'])
+      if (isNaN(latitude) || isNaN(longitude)) continue
+
+      resultats.push({
+        nom,
+        type_principal: typesFiltres[0] ?? 'PointOfInterest',
+        latitude,
+        longitude,
+      })
+    } catch {
+      // Fichier corrompu ou structure inattendue — on passe
+    }
   }
 
   return resultats

@@ -368,12 +368,15 @@ Affiché dans l'interface :
 #### Microservice — Structure des fichiers
 ```
 microservice/
-├── index.ts                  → Express, démarrage CSV sync + indexation async
+├── index.ts                  → Express, démarrage CSV sync + chargement index async
 ├── routes/communes.ts        → GET /communes?nom=XXX (autocomplete + homonymes)
 ├── routes/poi.ts             → GET /poi?code_insee=XXX&types=...&limit=...
 ├── services/csv-reader.ts    → CSV → Map normalisée (accents/tirets/homonymes)
-├── services/datatourisme.ts  → scan récursif 489k fichiers → index RAM par INSEE
+├── services/datatourisme.ts  → cache disque + index RAM filepaths par INSEE
 ├── types/index.ts            → Commune, IndexPOI, POIResult
+├── cache/
+│   ├── .gitignore            → exclut index-communes.json (56 Mo, régénérable)
+│   └── index-communes.json   → cache persisté sur disque (généré au 1er démarrage)
 ├── package.json / tsconfig.json
 └── .env                      → chemins pré-remplis
 ```
@@ -384,9 +387,47 @@ microservice/
 - Code INSEE : `data.isLocatedAt[0]["schema:address"][0]["hasAddressCity"]["insee"]`
 - GPS : `data.isLocatedAt[0]["schema:geo"]["schema:latitude/longitude"]` (strings → parseFloat)
 
+#### Analyse des préfixes DATA Tourisme
+Résultat du scan exhaustif : **28 préfixes numériques** distincts dans les noms de fichiers (ex: `3-uuid.json`, `13-uuid.json`).
+**Conclusion critique** : les préfixes ne correspondent PAS aux codes département — un préfixe couvre plusieurs départements (ex: préfixe `13` = 103 173 fichiers couvrant les depts 03, 26, 38, 43, 74). Le filtrage par département ne peut donc pas se faire par préfixe de fichier. Il se fait uniquement via le code INSEE extrait du contenu JSON.
+
+#### Optimisation : cache disque (2026-02-24)
+**Problème** : l'indexation complète des 489 318 fichiers prenait 3-5 min à chaque démarrage.
+
+**Solution implémentée** — stratégie cache-first :
+- Au **premier démarrage** : scan de tous les fichiers → extraction du code INSEE uniquement → construction de la Map `code_insee → [filepaths]` → sauvegarde dans `microservice/cache/index-communes.json` (56 Mo)
+- Aux **démarrages suivants** : lecture directe du cache JSON → chargement en RAM en ~87ms
+- Si cache corrompu : reconstruction automatique transparente
+
+**Changement architectural dans `datatourisme.ts`** :
+- `lancerIndexation()` → remplacée par `chargerOuConstruireIndex()` + `construireIndex()`
+- L'index RAM ne stocke plus que des **filepaths** (`Map<string, string[]>`) — beaucoup plus léger
+- Les données complètes (nom, types, GPS) sont lues **à la demande** au moment de la requête `/poi`, fichier par fichier avec `try/catch`
+- La logique de filtre d'exclusion de types (hébergements, restaurants...) reste dans `routes/poi.ts` — inchangée
+
+**Structure du fichier cache** :
+```json
+{
+  "generated_at": "2026-02-23T22:45:00.000Z",
+  "total_fichiers": 489318,
+  "total_communes": 28883,
+  "index": {
+    "01427": ["/chemin/vers/3-xxxx.json", "/chemin/vers/28-xxxx.json"],
+    "74010": ["..."]
+  }
+}
+```
+
+**Résultats validés** :
+- Premier démarrage : 489 318 fichiers scannés, 28 883 communes, cache 56 Mo généré
+- Redémarrage : `Cache chargé — 28883 communes en 87ms` (gain x2000 vs scan complet)
+- `GET /poi?code_insee=01427&limit=10` → 10 POI retournés (Trévoux — Apothicairerie, Sanctuaire d'Ars, Voie Bleue...)
+
 #### Pour démarrer le microservice
 ```bash
 cd microservice && npm run dev
+# Si premier lancement : construction du cache automatique (~3-5 min, une seule fois)
+# Si cache présent : prêt en < 100ms
 ```
 
 ### Phase 2 — Modules de collecte

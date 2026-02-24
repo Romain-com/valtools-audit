@@ -2,7 +2,7 @@ import 'dotenv/config'
 import express from 'express'
 import path from 'path'
 import { chargerCSVCommunes } from './services/csv-reader'
-import { lancerIndexation } from './services/datatourisme'
+import { chargerOuConstruireIndex } from './services/datatourisme'
 import routesCommunes from './routes/communes'
 import routesPOI from './routes/poi'
 
@@ -47,8 +47,8 @@ app.get('/health', (_req, res) => {
 app.listen(PORT, () => {
   console.log(`[Microservice] Serveur démarré sur le port ${PORT}`)
 
-  // Indexation DATA Tourisme en arrière-plan — ne bloque pas le serveur
-  lancerIndexation(path.resolve(DATATOURISME_PATH)).catch((err) => {
-    console.error('[Microservice] Erreur lors du lancement de l\'indexation :', err)
+  // Chargement ou construction de l'index DATA Tourisme — ne bloque pas le serveur
+  chargerOuConstruireIndex().catch((err: unknown) => {
+    console.error('[Microservice] Erreur lors du chargement de l\'index :', err)
   })
 })
