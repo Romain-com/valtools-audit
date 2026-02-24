@@ -238,7 +238,7 @@ PAGESPEED_API_KEY= (à créer)
 | Volume hashtag Instagram (postsCount) | Apify instagram-hashtag-stats | ✅ |
 | Posts récents + ratio OT/UGC | Apify instagram-hashtag-scraper | ✅ |
 | Santé technique (Core Web Vitals) | Google PageSpeed API | ⏳ clé à créer |
-| Stocks hébergements / activités / services | Microservice DATA Tourisme | ✅ index prêt |
+| Stocks hébergements / activités / services | Microservice DATA Tourisme | ⏳ index prêt — endpoint /stocks à implémenter (Bloc 8) |
 | Concurrents directs (3) + indirects (3) | OpenAI | ✅ |
 | Métriques concurrents | DataForSEO + Haloscan | ✅ |
 | Contenus GDoc/GSlides | OpenAI (copier-coller manuel) | ✅ |
@@ -251,7 +251,8 @@ PAGESPEED_API_KEY= (à créer)
 - **Format** : fichiers JSON organisés par région / département
 - **Accès** : microservice Node.js local (Express) sur Mac, tourne en arrière-plan
 - **Stratégie** : indexation légère au démarrage (nom, type, commune, GPS), filtrage à la volée, streaming sans charger en RAM
-- **Endpoint exposé** : `GET /stocks?destination=XXX` → counts hébergements / activités / services
+- **Endpoints existants** : `GET /communes?nom=XXX` + `GET /poi?code_insee=XXX&limit=XXX`
+- **Endpoint à créer (Bloc 8)** : `GET /stocks?code_insee=XXX` → counts hébergements / activités / services
 - **⚠️ À faire avant de coder** : ouvrir un fichier JSON et identifier la clé exacte du nom de commune
 
 ---
@@ -339,7 +340,7 @@ Affiché dans l'interface :
 - [ ] Extraire charte PDF → `design-tokens.md`
 - [ ] Lister les blocs de contenu des templates GDoc/GSlides
 - [ ] Rassembler grilles tarifaires API → `api-costs.md`
-- [ ] Ouvrir un fichier DATA Tourisme → identifier la clé JSON du nom de commune
+- [x] Ouvrir un fichier DATA Tourisme → identifier la clé JSON du nom de commune ✅ (clés confirmées : rdfs:label.fr[0], isLocatedAt[0].schema:address[0].hasAddressCity.insee, schema:geo)
 - [ ] Créer repo GitHub privé
 - [ ] Créer projet Supabase → noter URL + anon key + service role key
 - [ ] Créer clé Google PageSpeed (Google Cloud Console)
