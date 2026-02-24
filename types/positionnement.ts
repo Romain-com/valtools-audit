@@ -1,6 +1,23 @@
 // Types TypeScript pour le Bloc 1 — Positionnement & Notoriété
 
-// ─── Google Maps ────────────────────────────────────────────────────────────
+// ─── POI — DATA Tourisme ─────────────────────────────────────────────────────
+
+// Données brutes renvoyées par le microservice DATA Tourisme
+export interface POIBrut {
+  id?: string
+  nom?: string
+  types?: string[]
+  // Les données DATA Tourisme sont très variables selon le type de POI
+  [key: string]: unknown
+}
+
+// POI sélectionné par OpenAI parmi la liste brute
+export interface POISelectionne {
+  nom: string
+  raison: string
+}
+
+// ─── Google Maps ─────────────────────────────────────────────────────────────
 
 export interface FicheGoogle {
   nom: string
@@ -13,17 +30,20 @@ export interface FicheGoogleAbsente {
   absent: true
 }
 
-export interface CoutAppel {
-  nb_appels: number
-  cout_unitaire: number
-  cout_total: number
-}
+// Fiche Maps d'un POI (peut être présente ou absente)
+export type FicheGooglePOI = FicheGoogle | FicheGoogleAbsente
 
 export interface ResultatMaps {
-  destination: FicheGoogle
   ot: FicheGoogle | FicheGoogleAbsente
+  poi: FicheGooglePOI[]
   score_synthese: number
-  cout: CoutAppel
+  cout: {
+    dataforseo: {
+      nb_appels: number
+      cout_unitaire: number
+      cout_total: number
+    }
+  }
 }
 
 // ─── Instagram ───────────────────────────────────────────────────────────────
@@ -40,7 +60,11 @@ export interface ResultatInstagram {
   posts_count: number | null
   posts_recents: PostInstagram[]
   ratio_ot_ugc: string
-  cout: CoutAppel
+  cout: {
+    nb_appels: number
+    cout_unitaire: number
+    cout_total: number
+  }
   erreur?: boolean
 }
 
@@ -54,13 +78,30 @@ export interface AnalysePositionnement {
     faiblesses: string[]
   }
   paragraphe_gdoc: string
-  cout: CoutAppel
+  cout: {
+    nb_appels: number
+    cout_unitaire: number
+    cout_total: number
+  }
 }
 
 export interface AnalysePositionnementErreur {
   erreur: 'parsing_failed'
   raw: string
-  cout: CoutAppel
+  cout: {
+    nb_appels: number
+    cout_unitaire: number
+    cout_total: number
+  }
+}
+
+// ─── Coûts agrégés du bloc ───────────────────────────────────────────────────
+
+export interface CoutsBloc {
+  dataforseo: { nb_appels: number; cout_unitaire: number; cout_total: number }
+  apify: { nb_appels: number; cout_unitaire: number; cout_total: number }
+  openai: { nb_appels: number; cout_unitaire: number; cout_total: number }
+  total_bloc: number
 }
 
 // ─── Résultat agrégé du bloc ─────────────────────────────────────────────────
@@ -69,5 +110,5 @@ export interface ResultatBlocPositionnement {
   google: ResultatMaps
   instagram: ResultatInstagram
   positionnement: AnalysePositionnement | AnalysePositionnementErreur
-  cout_total_bloc: number
+  couts_bloc: CoutsBloc
 }

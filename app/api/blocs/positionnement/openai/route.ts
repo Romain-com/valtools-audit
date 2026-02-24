@@ -57,11 +57,17 @@ function construirePromptUtilisateur(
     .map((p, i) => `  ${i + 1}. @${p.username} (${p.likes} likes) : "${p.caption?.slice(0, 80) ?? ''}"`)
     .join('\n')
 
+  // Résumé des POI notés (on exclut les fiches absentes)
+  const poiNotes = (google.poi ?? [])
+    .filter((f): f is import('@/types/positionnement').FicheGoogle => !('absent' in f) && f.note > 0)
+    .map((f) => `${f.nom} : ${f.note}/5 (${f.avis} avis)`)
+    .join(', ')
+
   return `Destination touristique : ${destination}
 
 DONNÉES GOOGLE MAPS :
-- Destination : Note ${google.destination.note}/5 (${google.destination.avis} avis)
 - ${ficheOT}
+${poiNotes ? `- POI phares : ${poiNotes}` : ''}
 - Score de synthèse : ${google.score_synthese}/5
 
 DONNÉES INSTAGRAM :

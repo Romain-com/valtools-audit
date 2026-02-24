@@ -1,19 +1,23 @@
 // Route Handler — DataForSEO Maps
-// Responsabilité : récupérer les fiches Google Maps de la destination et de son OT
+// Responsabilité : récupérer les fiches Google Maps de l'OT + 3 POI sélectionnés
 // ⚠️  Serveur uniquement — aucune clé API exposée côté client
+// ⚠️  4 appels séquentiels — une seule tâche par requête (contrainte DataForSEO)
 
 import { NextRequest, NextResponse } from 'next/server'
 import axios from 'axios'
-import type { ResultatMaps, FicheGoogle, FicheGoogleAbsente } from '@/types/positionnement'
+import { API_COSTS } from '@/lib/api-costs'
+import type { FicheGoogle, FicheGoogleAbsente, FicheGooglePOI, POISelectionne } from '@/types/positionnement'
 
 // URL de l'API DataForSEO Maps
 const DATAFORSEO_URL = 'https://api.dataforseo.com/v3/serp/google/maps/live/advanced'
 
-// Timeout généreux — DataForSEO Maps peut être lent (60s recommandé)
+// Timeout généreux — DataForSEO Maps peut être lent
 const TIMEOUT_MS = 60_000
 
-// Coût unitaire par appel Maps (en euros)
-const COUT_UNITAIRE = 0.006
+// Nombre d'appels total pour ce module
+const NB_APPELS = 4
+
+// ─── Types internes DataForSEO ───────────────────────────────────────────────
 
 interface DataForSEOItem {
   type: string
@@ -25,19 +29,15 @@ interface DataForSEOItem {
   address?: string
 }
 
-interface DataForSEOResult {
-  items?: DataForSEOItem[]
-}
-
 interface DataForSEOTask {
-  result?: DataForSEOResult[]
-  status_code?: number
-  status_message?: string
+  result?: Array<{ items?: DataForSEOItem[] }>
 }
 
 interface DataForSEOResponse {
   tasks?: DataForSEOTask[]
 }
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
  * Fait un seul appel DataForSEO Maps pour un keyword donné.
@@ -46,7 +46,6 @@ interface DataForSEOResponse {
 async function appelMaps(keyword: string, auth: string): Promise<DataForSEOTask> {
   const response = await axios.post<DataForSEOResponse>(
     DATAFORSEO_URL,
-    // Une seule tâche dans l'array (contrainte DataForSEO)
     [{ keyword, language_name: 'French', location_name: 'France' }],
     {
       headers: {
@@ -60,18 +59,20 @@ async function appelMaps(keyword: string, auth: string): Promise<DataForSEOTask>
 }
 
 /**
- * Extrait la première fiche Maps pertinente depuis les items DataForSEO.
- * Retourne null si aucune fiche trouvée.
+ * Extrait la première fiche pertinente depuis les items DataForSEO.
+ * Priorité aux items de type "organic" (établissements naturels, pas les annonces).
+ * Fallback sur le premier item avec un titre si aucun organic trouvé.
  */
 function extrairePremiereFiche(task: DataForSEOTask): FicheGoogle | null {
   const items = task.result?.[0]?.items ?? []
 
-  // On cherche le premier item de type "maps_search" ou "local_pack"
-  const fiche = items.find(
-    (item) => item.type === 'maps_search' || item.type === 'local_pack' || item.type === 'google_maps'
-  ) ?? items[0]
+  // Chercher en priorité les résultats organiques (pas les annonces)
+  const fiche =
+    items.find((item) => item.type === 'organic') ??
+    items.find((item) => Boolean(item.title)) ??
+    items[0]
 
-  if (!fiche || !fiche.title) return null
+  if (!fiche?.title) return null
 
   return {
     nom: fiche.title,
@@ -81,10 +82,15 @@ function extrairePremiereFiche(task: DataForSEOTask): FicheGoogle | null {
   }
 }
 
+// ─── Handler ──────────────────────────────────────────────────────────────────
+
 export async function POST(request: NextRequest) {
   // Lecture du body
   const body = await request.json().catch(() => ({}))
-  const { destination } = body as { destination?: string; domaine_ot?: string }
+  const { destination, poi_selectionnes } = body as {
+    destination?: string
+    poi_selectionnes?: POISelectionne[]
+  }
 
   if (!destination) {
     return NextResponse.json({ erreur: 'Paramètre destination manquant' }, { status: 400 })
@@ -95,74 +101,83 @@ export async function POST(request: NextRequest) {
   const password = process.env.DATAFORSEO_PASSWORD
 
   if (!login || !password) {
-    return NextResponse.json({ erreur: 'Variables DATAFORSEO_LOGIN / DATAFORSEO_PASSWORD manquantes' }, { status: 500 })
+    return NextResponse.json(
+      { erreur: 'Variables DATAFORSEO_LOGIN / DATAFORSEO_PASSWORD manquantes' },
+      { status: 500 }
+    )
   }
 
   const auth = Buffer.from(`${login}:${password}`).toString('base64')
 
-  // ─── Appel 1 : fiche de la destination ───────────────────────────────────
-  let ficheDestination: FicheGoogle = {
-    nom: destination,
-    note: 0,
-    avis: 0,
-    adresse: '',
-  }
-
-  try {
-    const taskDestination = await appelMaps(destination, auth)
-    const extraite = extrairePremiereFiche(taskDestination)
-    if (extraite) ficheDestination = extraite
-  } catch (err) {
-    // Fallback : on continue avec les valeurs par défaut
-    console.error('[Maps] Erreur appel destination :', err)
-  }
-
-  // ─── Appel 2 : fiche de l'OT ─────────────────────────────────────────────
+  // ─── Appel 1 : fiche de l'OT ─────────────────────────────────────────────
   let ficheOT: FicheGoogle | FicheGoogleAbsente = { absent: true }
 
   try {
     const keywordOT = `Office de tourisme ${destination}`
-    const taskOT = await appelMaps(keywordOT, auth)
-    const extraite = extrairePremiereFiche(taskOT)
-    if (extraite) {
-      ficheOT = extraite
-    }
-    // Si aucune fiche trouvée → on laisse { absent: true }
+    const task = await appelMaps(keywordOT, auth)
+    const extraite = extrairePremiereFiche(task)
+    if (extraite) ficheOT = extraite
+    // Si aucune fiche trouvée → { absent: true }, ne bloque pas le reste
   } catch (err) {
-    // Fallback : OT absent, ne bloque pas le reste
     console.error('[Maps] Erreur appel OT :', err)
   }
 
-  // ─── Calcul du score de synthèse ─────────────────────────────────────────
-  // Les villes n'ont pas de note Google Maps — seuls les établissements sont notés.
-  // Stratégie : on ne pondère que les notes disponibles (> 0).
-  let scoreSynthese: number
+  // ─── Appels 2/3/4 : fiches des 3 POI sélectionnés ────────────────────────
+  // Séquentiels — une seule tâche par requête DataForSEO (contrainte stricte)
+  const fichesPOI: FicheGooglePOI[] = []
+  const pois = poi_selectionnes ?? []
 
-  const noteDestination = ficheDestination.note   // 0 si ville sans note
+  for (const poi of pois.slice(0, 3)) {
+    try {
+      const task = await appelMaps(poi.nom, auth)
+      const extraite = extrairePremiereFiche(task)
+      fichesPOI.push(extraite ?? { absent: true })
+    } catch (err) {
+      // Fallback : POI absent — ne bloque pas les suivants
+      console.error(`[Maps] Erreur appel POI "${poi.nom}" :`, err)
+      fichesPOI.push({ absent: true })
+    }
+  }
+
+  // ─── Calcul du score de synthèse ─────────────────────────────────────────
+  // Formule : score = moyenne_poi × 0.7 + note_ot × 0.3
+  // On exclut du calcul les fiches absentes ou sans note
+
+  const notesPOI = fichesPOI
+    .filter((f): f is FicheGoogle => !('absent' in f) && f.note > 0)
+    .map((f) => f.note)
+
+  const moyennePOI =
+    notesPOI.length > 0
+      ? notesPOI.reduce((acc, n) => acc + n, 0) / notesPOI.length
+      : 0
+
   const noteOT = 'absent' in ficheOT ? 0 : ficheOT.note
 
-  if (noteDestination > 0 && noteOT > 0) {
-    // Les deux ont une note → moyenne pondérée destination × 0.7, OT × 0.3
-    scoreSynthese = Math.round((noteDestination * 0.7 + noteOT * 0.3) * 10) / 10
-  } else if (noteOT > 0) {
-    // Seul l'OT a une note → on utilise la note OT
-    scoreSynthese = noteOT
+  let scoreSynthese: number
+
+  if (moyennePOI > 0 && noteOT > 0) {
+    // Cas standard : POI et OT tous les deux présents
+    scoreSynthese = Math.round((moyennePOI * 0.7 + noteOT * 0.3) * 10) / 10
+  } else if (moyennePOI > 0) {
+    // OT absent → score = moyenne des POI uniquement
+    scoreSynthese = Math.round(moyennePOI * 10) / 10
   } else {
-    // Seule la destination a une note (ou aucune)
-    scoreSynthese = noteDestination
+    // Aucun POI noté → score = note OT (ou 0 si OT absent aussi)
+    scoreSynthese = noteOT
   }
 
   // ─── Construction de la réponse ──────────────────────────────────────────
-  const resultat: ResultatMaps = {
-    destination: ficheDestination,
+  return NextResponse.json({
     ot: ficheOT,
+    poi: fichesPOI,
     score_synthese: scoreSynthese,
     cout: {
-      nb_appels: 2,
-      cout_unitaire: COUT_UNITAIRE,
-      cout_total: COUT_UNITAIRE * 2,
+      dataforseo: {
+        nb_appels: NB_APPELS,
+        cout_unitaire: API_COSTS.dataforseo_maps,
+        cout_total: NB_APPELS * API_COSTS.dataforseo_maps,
+      },
     },
-  }
-
-  return NextResponse.json(resultat)
+  })
 }

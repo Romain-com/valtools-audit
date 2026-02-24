@@ -1,5 +1,5 @@
 # CONTEXT.MD — Destination Digital Audit App
-> Dernière mise à jour : Phase 1 — Microservice fondations terminé et validé (2026-02-23)
+> Dernière mise à jour : Phase 2 — Bloc 1 Positionnement & Notoriété créé et validé (2026-02-24)
 > Destination de test de référence : **Annecy** | Domaine OT : `lac-annecy.com`
 
 ---
@@ -362,7 +362,7 @@ Affiché dans l'interface :
 |----------|----------|
 | `GET /health` | `{"statut":"ok","port":3001}` |
 | `GET /communes?nom=annecy` | Retourne commune + SIREN + INSEE + dept + population |
-| `GET /poi?code_insee=74010&types=PointOfInterest&limit=5` | 5 POI avec nom/type/GPS |
+| `GET /poi?code_insee=01427&limit=10` | 10 POI touristiques (logique exclusion) |
 | `GET /poi` (index pas prêt) | HTTP 503 avec message d'attente |
 
 #### Microservice — Structure des fichiers
@@ -430,17 +430,79 @@ cd microservice && npm run dev
 # Si cache présent : prêt en < 100ms
 ```
 
-### Phase 2 — Modules de collecte
-Un module = une section de code = testé indépendamment avant de passer au suivant :
-1. Microservice CSV → identification SIREN + détection doublon
-2. DataForSEO (SERP + Maps)
-3. OpenAI (positionnement + hashtags + concurrents + contenus)
+### Phase 2 — Blocs de collecte ✅ Bloc 1 terminé (2026-02-24)
+
+#### Bloc 1 — Positionnement & Notoriété ✅ TERMINÉ
+
+**Architecture** :
+```
+app/api/blocs/positionnement/
+├── maps/route.ts          → DataForSEO Maps (4 appels : OT + 3 POI)
+├── instagram/route.ts     → Apify (hashtag-stats + hashtag-scraper)
+├── openai/route.ts        → GPT-4o-mini (analyse positionnement)
+├── poi/route.ts           → Microservice DATA Tourisme (POI bruts)
+└── poi-selection/route.ts → GPT-4o-mini (sélection 3 POI pertinents)
+
+lib/
+├── api-costs.ts           → Tarifs unitaires (source de vérité unique)
+├── tracking-couts.ts      → Persistance Supabase fire & forget
+└── blocs/positionnement.ts → Orchestrateur du bloc
+
+types/positionnement.ts    → Types complets du bloc
+```
+
+**Flux orchestrateur** :
+```
+1. POST /poi              → DATA Tourisme (code_insee)
+2. POST /poi-selection    → OpenAI (sélection 3 POI parmi la liste)
+3. Promise.all([
+     POST /maps           → DataForSEO (OT + 3 POI séquentiels)
+     POST /instagram      → Apify (hashtag-stats + scraper)
+   ])
+4. POST /openai           → GPT-4o-mini (analyse finale)
+5. enregistrerCoutsBloc() → Supabase fire & forget
+```
+
+**Score de synthèse Maps** :
+- 4 appels séquentiels : `"Office de tourisme [destination]"` + 3 POI sélectionnés
+- `score = moyenne_POI × 0.7 + note_OT × 0.3`
+- Si OT absent → `score = moyenne_POI`
+- Si aucun POI → `score = note_OT`
+
+**Logique POI — exclusion** (⚠️ pas inclusion) :
+```typescript
+const TYPES_EXCLUS = ['Accommodation','FoodEstablishment','Restaurant',
+  'CraftsmanShop','Store','Hotel','Guesthouse', ...]
+// Garder un POI si aucun de ses types n'est dans TYPES_EXCLUS
+```
+Types réels retournés pour Trévoux (01427) : `PlaceOfInterest`, `CulturalSite`, `CityHeritage`, `EntertainmentAndEvent`
+
+**Test validé — Trévoux (code INSEE 01427)** :
+- OT : Office de tourisme Ars Trévoux — 4.6/5 (66 avis)
+- POI DATA Tourisme : 17 disponibles — Apothicairerie, Sanctuaire d'Ars, Voie Bleue à vélo...
+- Instagram #trevoux : 1 585 000 posts — ratio OT/UGC : 6/10
+- Coût total bloc : **0.108 €** en ~27s
+
+**Piège résolu** : code INSEE Trévoux = `01427` (pas 01390). Le microservice expose `GET /communes?nom=trevoux` pour résoudre le code correct.
+
+**Coûts du bloc** :
+```typescript
+const API_COSTS = {
+  dataforseo_maps: 0.006,       // 4 appels = 0.024 €
+  apify_hashtag_stats: 0.05,    // 1 run = 0.05 €
+  apify_hashtag_scraper: 0.05,  // 1 run = 0.05 €
+  openai_gpt4o_mini: 0.001,     // 2 appels = 0.002 €
+}                               // Total bloc ≈ 0.108 €
+```
+
+#### Blocs suivants à implémenter
+2. DataForSEO SERP (schéma digital + mots-clés + PAA + Top 10)
+3. OpenAI (hashtags + concurrents + contenus)
 4. data.economie.gouv.fr (taxe de séjour)
-5. Apify (instagram-hashtag-stats + instagram-hashtag-scraper)
-6. Haloscan (visibilité SEO)
-7. Monitorank (contexte algo)
-8. Google PageSpeed (Core Web Vitals)
-9. Microservice DATA Tourisme (stocks)
+5. Haloscan (visibilité SEO)
+6. Monitorank (contexte algo)
+7. Google PageSpeed (Core Web Vitals)
+8. Microservice DATA Tourisme (stocks hébergements / activités)
 
 ### Phase 3 — Orchestration et UX
 - Page lancement + autocomplete + gestion doublon
@@ -504,3 +566,5 @@ DATA_TOURISME_API_URL=http://localhost:3001
 | `test-round2.js` | Round 2 — Monitorank, Haloscan, Instagram postsCount |
 | `test-round3.js` | Round 3 — RapidAPI Instagram (abandonné) |
 | `test-hashtag-stats.js` | Validation finale — apify/instagram-hashtag-stats |
+| `test-bloc1.js` | Bloc 1 — test standalone Annecy (flux complet sans Next.js) |
+| `test-trevoux.js` | Bloc 1 — test intégration Trévoux (vraies APIs, microservice requis) |
