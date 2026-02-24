@@ -1,5 +1,5 @@
 # CONTEXT.MD — Destination Digital Audit App
-> Dernière mise à jour : Phase 2 — Bloc 2 Volume d'affaires créé et validé (2026-02-24)
+> Dernière mise à jour : Phase 2 — Bloc 3 finalisé avec fallback DataForSEO domain_rank_overview (2026-02-24)
 > Destination de test de référence : **Annecy** | Domaine OT : `lac-annecy.com`
 
 ---
@@ -153,17 +153,54 @@ POST https://api.haloscan.com/api/domains/overview
 Headers: { "haloscan-api-key": "TOKEN" }
 Body: { "input": "lac-annecy.com", "mode": "domain", "requested_data": ["metrics", "best_keywords", "best_pages"] }
 ```
-Champs utiles : `total_keyword_count`, `total_traffic`, `top_3_positions`, `top_10_positions`, `visibility_index`, `traffic_value`
+Champs utiles : `metrics.total_keyword_count`, `metrics.total_traffic`, `metrics.top_3_positions`, `metrics.top_10_positions`, `metrics.visibility_index`, `metrics.traffic_value`
 
-**Coût** : 1 crédit site/appel — ~2 972 crédits/mois renouvelables
+**Coût** : 1 crédit site/appel — ~2 972 crédits/mois renouvelables. ⚠️ Le crédit est consommé même si la réponse est `SITE_NOT_FOUND`.
 
-**⚠️ Fallback obligatoire**
-```javascript
-if (data.metrics?.errorCode === 'SITE_NOT_FOUND') {
-  // Afficher "Non indexé dans Haloscan" et continuer sans bloquer
-}
+**Architecture Bloc 3** : `haloscan/route.ts` prend `{ domaine: string }` (un seul domaine) et retourne `{ donnees_valides: boolean, resultat: ResultatHaloscan }`. L'orchestrateur décide lui-même du fallback DataForSEO si `donnees_valides: false`.
+
+**Séquence de fallback implémentée** :
 ```
+Haloscan nu → SITE_NOT_FOUND ou vide (donnees_valides: false)
+  → retry Haloscan www.domaine          si toujours vide
+  → fallback DataForSEO domain_rank_overview nu
+  → retry DataForSEO www.domaine        si count=0
+  → zéros (site_non_indexe: true)      en dernier recours
+Résultat : domaine original toujours conservé dans l'objet retourné
+```
+
+**Condition "vide"** (dans `haloscan/route.ts`) :
+```javascript
+const estVide = metrics.errorCode === 'SITE_NOT_FOUND' ||
+                (!metrics.total_keyword_count && !metrics.total_traffic)
+```
+
 Les données de trafic sous-représentent le trafic FR — fiable pour comparaisons relatives uniquement.
+
+---
+
+### ✅ DataForSEO domain_rank_overview (fallback Haloscan)
+**Endpoint** :
+```
+POST https://api.dataforseo.com/v3/dataforseo_labs/google/domain_rank_overview/live
+Auth: Basic (même login/password que SERP)
+Body: [{ "target": "lac-annecy.com", "location_code": 2250, "language_code": "fr" }]
+```
+
+**⚠️ Chemin de parsing — niveau `items[0]` intermédiaire obligatoire** :
+```javascript
+// ✅ CORRECT
+const organic = response.data?.tasks?.[0]?.result?.[0]?.items?.[0]?.metrics?.organic
+
+// ❌ FAUX — manque items[0]
+const organic = response.data?.tasks?.[0]?.result?.[0]?.metrics?.organic
+```
+
+Champs utiles : `organic.count` (nb mots-clés), `organic.pos_1_3`, `organic.pos_4_10`, `organic.rank_absolute`, `organic.estimated_traffic_monthly`
+
+**Condition vide** : `!organic || !organic.count`
+
+**Coût** : 0.006 €/appel (même tarif que DataForSEO SERP). Applique aussi retry www. si count=0.
 
 ---
 
@@ -233,7 +270,7 @@ PAGESPEED_API_KEY= (à créer)
 | Mots-clés & volumes de recherche | DataForSEO SERP | ✅ |
 | PAA de la destination | DataForSEO SERP | ✅ |
 | Top 10 Google par catégorie | DataForSEO SERP | ✅ |
-| Visibilité SEO domaines officiels | Haloscan | ✅ |
+| Visibilité SEO domaines officiels | Haloscan + fallback DataForSEO domain_rank_overview | ✅ |
 | Contexte algo Google | Monitorank | ✅ |
 | Volume hashtag Instagram (postsCount) | Apify instagram-hashtag-stats | ✅ |
 | Posts récents + ratio OT/UGC | Apify instagram-hashtag-scraper | ✅ |
@@ -561,13 +598,139 @@ OpenAI gpt-4o-mini   : 1 appel = 0.001 €
 Total bloc           : 0.001 €
 ```
 
+#### Bloc 3 — Schéma digital & Santé technique ✅ TERMINÉ (2026-02-24)
+
+**Architecture** :
+```
+app/api/blocs/schema-digital/
+├── serp/route.ts              → DataForSEO SERP (5 requêtes parallèles, fusion + dédup par domaine)
+├── classification/route.ts    → GPT-4o-mini (catégorisation SERP + visibilite_ot_par_intention)
+├── haloscan/route.ts          → Haloscan — UN domaine par appel, retourne { donnees_valides, resultat }
+├── domain-analytics/route.ts  → DataForSEO domain_rank_overview — fallback si Haloscan vide
+├── pagespeed/route.ts         → Google PageSpeed (mobile + desktop en parallèle par domaine)
+├── analyse-ot/route.ts        → GPT-4o-mini (fonctionnalités + maturité digitale site OT)
+└── openai/route.ts            → GPT-4o-mini (synthèse schéma digital)
+
+lib/blocs/schema-digital.ts   → Orchestrateur du bloc
+types/schema-digital.ts        → CategorieResultatSERP + ResultatHaloscan (avec source) + tous les types
+```
+
+**Flux orchestrateur** :
+```
+1. POST /serp              → DataForSEO (5 requêtes parallèles)
+                              Requêtes : destination | tourisme | hébergement | que_faire | restaurant
+                              Fusion + déduplication par domaine (meilleure position conservée)
+                              Retourne : par_requete (top3 par intention) + tous_resultats (fusionné)
+
+2. POST /classification    → OpenAI (catégorisation de tous les domaines)
+                              Retourne : resultats_classes, top3_officiels, domaine_ot,
+                                         visibilite_ot_par_intention, score_visibilite_ot (0-5)
+
+3a. Boucle séquentielle par domaine du top3_officiels :
+     POST /haloscan { domaine }        → { donnees_valides, resultat }
+                                          Haloscan nu → retry www. si vide
+     Si !donnees_valides :
+       POST /domain-analytics { domaine } → ResultatHaloscan (source: 'dataforseo')
+                                            DataForSEO nu → retry www. si count=0
+     couts_seo.haloscan++ (toujours)
+     couts_seo.dataforseo++ (si fallback déclenché)
+
+3b. Promise.all([
+      POST /pagespeed { domaines }     → Core Web Vitals (mobile + desktop par domaine)
+      POST /analyse-ot { domaine_ot }  → fonctionnalites_detectees + niveau_maturite_digital
+    ])
+
+4. POST /openai            → synthèse narrative (synthese_schema + indicateurs_cles + points_attention)
+5. enregistrerCoutsBloc()  → Supabase fire & forget (couts ventilés haloscan / dataforseo_domain)
+```
+
+**Types clés** :
+```typescript
+// Catégories SERP
+type CategorieResultatSERP = 'officiel_ot' | 'officiel_mairie' | 'officiel_autre' | 'ota' | 'media' | 'autre'
+
+// Visibilité par intention de recherche
+interface VisibiliteParIntention {
+  position: number | null       // position du premier site officiel_ dans la requête (null si absent top3)
+  categorie_pos1: CategorieResultatSERP  // catégorie du site réellement en position 1
+}
+
+// Métriques SEO — Haloscan ou fallback DataForSEO
+interface ResultatHaloscan {
+  source: 'haloscan' | 'dataforseo' | 'inconnu'  // fournisseur effectif
+  site_non_indexe: boolean  // true uniquement si toutes les sources ont retourné 0
+  // ... total_keywords, total_traffic, top_3_positions, top_10_positions, visibility_index, traffic_value
+}
+
+// Analyse site OT (inférence depuis titre + meta uniquement, sans scraping)
+interface AnalyseSiteOT {
+  fonctionnalites_detectees: {
+    moteur_reservation: boolean | 'incertain'
+    blog_actualites: boolean | 'incertain'
+    newsletter: boolean | 'incertain'
+    agenda_evenements: boolean | 'incertain'
+    carte_interactive: boolean | 'incertain'
+    application_mobile: boolean | 'incertain'
+  }
+  niveau_maturite_digital: 'faible' | 'moyen' | 'avance'
+  commentaire: string
+}
+```
+
+**Tests validés** :
+
+| Destination | OT détecté | Score visibilité | total_keywords (DataForSEO) | PageSpeed mobile |
+|---|---|---|---|---|
+| Annecy | lac-annecy.com | 2/5 | 25 487 | 48/100 |
+| Trévoux | ars-trevoux.com | 2/5 | — (Haloscan direct) | mobile+desktop CLS critique (0.95) |
+
+**Pièges résolus** :
+- **Classification JSON tronqué** : tronquer titre (80 chars) + meta_description (100 chars) dans le prompt, `max_tokens: 1500` — sinon erreur "Unterminated string" pour 10+ résultats
+- **PageSpeed timeout** : 45 000ms obligatoire (30s trop court pour sites lents)
+- **Classification séquentielle** avant Haloscan/PageSpeed : besoin de `top3_officiels` pour savoir quels domaines analyser
+- **Haloscan nu vs www** : Haloscan indexe parfois uniquement `www.` — retry automatique implémenté dans `haloscan/route.ts`
+- **Haloscan zéros silencieux** : peut retourner métriques à 0 sans `SITE_NOT_FOUND` (limite de plan) → fallback DataForSEO déclenché par l'orchestrateur
+- **PageSpeed variabilité** : LCP peut varier entre runs selon charge serveur — mentionner dans l'UI comme "mesure indicative"
+
+**⚠️ DataForSEO domain_rank_overview — chemin de parsing critique** :
+```javascript
+// ✅ CORRECT — niveau items intermédiaire obligatoire
+const organic = response.data?.tasks?.[0]?.result?.[0]?.items?.[0]?.metrics?.organic
+
+// ❌ FAUX — manque le niveau items
+const organic = response.data?.tasks?.[0]?.result?.[0]?.metrics?.organic
+```
+Endpoint : `POST https://api.dataforseo.com/v3/dataforseo_labs/google/domain_rank_overview/live`
+Payload : `[{ target: 'lac-annecy.com', location_code: 2250, language_code: 'fr' }]`
+Champs utiles : `organic.count` (total_keywords), `organic.pos_1_3`, `organic.pos_4_10`, `organic.rank_absolute`, `organic.estimated_traffic_monthly`
+
+**Stratégie fallback SEO complète** (implémentée dans orchestrateur + test) :
+```
+Pour chaque domaine :
+  1. Haloscan domaine nu       → SITE_NOT_FOUND ou métriques vides
+  2. Haloscan www.domaine      → idem si toujours vide
+  3. DataForSEO domaine nu     → count=0 si non indexé
+  4. DataForSEO www.domaine    → données réelles si disponibles ✅
+  → resultat.source = 'dataforseo', domaine original conservé dans l'objet retourné
+  → couts_seo.haloscan++ (crédit consommé même si vide)
+  → couts_seo.dataforseo++ (appel DataForSEO déclenché)
+```
+
+**Coût du bloc** :
+```
+DataForSEO SERP       : 5 appels    = 0.030 €
+Haloscan              : 1-3 appels  = 0.010-0.030 € (1 crédit/appel même si vide)
+DataForSEO domain     : 0-3 appels  = 0-0.018 € (fallback uniquement si Haloscan vide)
+OpenAI (3 appels)     :             = 0.003 €
+PageSpeed             : gratuit     = 0.000 €
+Total bloc            :             ≈ 0.043-0.081 €
+Exemple Annecy        : 1 Haloscan + 1 DataForSEO fallback + 3 OpenAI = 0.049 €
+```
+
 #### Blocs suivants à implémenter
-3. DataForSEO SERP (schéma digital + mots-clés + PAA + Top 10)
 4. OpenAI (hashtags + concurrents + contenus)
-5. Haloscan (visibilité SEO)
-6. Monitorank (contexte algo)
-7. Google PageSpeed (Core Web Vitals)
-8. Microservice DATA Tourisme (stocks hébergements / activités)
+5. Monitorank (contexte algo Google)
+6. Microservice DATA Tourisme (stocks hébergements / activités)
 
 ### Phase 3 — Orchestration et UX
 - Page lancement + autocomplete + gestion doublon
@@ -634,3 +797,4 @@ DATA_TOURISME_API_URL=http://localhost:3001
 | `test-bloc1.js` | Bloc 1 — test standalone Annecy (flux complet sans Next.js) |
 | `test-trevoux.js` | Bloc 1 — test intégration Trévoux (vraies APIs, microservice requis) |
 | `test-bloc2.js` | Bloc 2 — test Vanves + Annecy (taxe de séjour, microservice requis) |
+| `test-bloc3.js` | Bloc 3 — test Annecy (SERP 5 requêtes, classification, Haloscan+fallback DataForSEO, PageSpeed, Analyse OT, OpenAI) |
