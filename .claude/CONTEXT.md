@@ -240,10 +240,10 @@ GET https://geo.api.gouv.fr/communes?nom=Annecy&fields=nom,code,codesPostaux,cod
 
 ---
 
-### ⏳ Google PageSpeed Insights
+### ✅ Google PageSpeed Insights
 **Auth** : clé Google Cloud Console (gratuite — 25 000 req/jour)
 ```
-PAGESPEED_API_KEY= (à créer)
+PAGESPEED_API_KEY=AIza...
 ```
 - 2 appels par domaine (mobile + desktop)
 
@@ -274,7 +274,7 @@ PAGESPEED_API_KEY= (à créer)
 | Contexte algo Google | Monitorank | ✅ |
 | Volume hashtag Instagram (postsCount) | Apify instagram-hashtag-stats | ✅ |
 | Posts récents + ratio OT/UGC | Apify instagram-hashtag-scraper | ✅ |
-| Santé technique (Core Web Vitals) | Google PageSpeed API | ⏳ clé à créer |
+| Santé technique (Core Web Vitals) | Google PageSpeed API | ✅ |
 | Stocks hébergements / activités / services | Microservice DATA Tourisme | ⏳ index prêt — endpoint /stocks à implémenter (Bloc 8) |
 | Concurrents directs (3) + indirects (3) | OpenAI | ✅ |
 | Métriques concurrents | DataForSEO + Haloscan | ✅ |
@@ -728,9 +728,11 @@ Exemple Annecy        : 1 Haloscan + 1 DataForSEO fallback + 3 OpenAI = 0.049 �
 ```
 
 #### Blocs suivants à implémenter
-4. OpenAI (hashtags + concurrents + contenus)
-5. Monitorank (contexte algo Google)
-6. Microservice DATA Tourisme (stocks hébergements / activités)
+- Social media (Instagram — hashtag stats + posts récents)
+- Monitorank (contexte algo Google)
+- Microservice DATA Tourisme (stocks hébergements / activités — Bloc /stocks endpoint)
+- Analyse concurrents (DataForSEO + Haloscan)
+- Synthèse contenus OpenAI (copier-coller GDoc/GSlides)
 
 ### Phase 3 — Orchestration et UX
 - Page lancement + autocomplete + gestion doublon
@@ -776,7 +778,7 @@ MONITORANK_API_KEY=4648-80kpZC7othd7...
 APIFY_API_TOKEN=apify_api_r47zaja0...
 
 # Google PageSpeed
-PAGESPEED_API_KEY= (à créer)
+PAGESPEED_API_KEY=AIza...
 
 # Microservice DATA Tourisme local
 DATA_TOURISME_API_URL=http://localhost:3001
