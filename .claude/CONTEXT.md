@@ -397,11 +397,48 @@ Affiché dans l'interface :
 - [ ] Créer projet Supabase → noter URL + anon key + service role key
 - [ ] Créer clé Google PageSpeed (Google Cloud Console)
 
-### Phase 1 — Fondations ✅ TERMINÉE (2026-02-23)
+### Phase 1 — Fondations ✅ TERMINÉE (2026-02-23) + Schéma Supabase ✅ (2026-02-25)
 - Setup Next.js + Tailwind + Supabase + Auth + GitHub
 - Schéma BDD et migrations Supabase
 - **Microservice Node.js local : CSV communes + DATA Tourisme ✅**
 - Structure dossiers et `.env.local`
+- **Migrations SQL + seed Annecy ✅** (2026-02-25)
+
+#### Schéma Supabase — Fichiers créés (2026-02-25)
+
+```
+supabase/
+├── schema-documentation.md          → Documentation exhaustive JSONB audits.resultats (7 blocs)
+├── migrations/
+│   ├── 001_initial_schema.sql        → Tables + ENUMs + triggers (profiles, destinations, audits, competitors)
+│   ├── 002_indexes.sql               → GIN (resultats, couts_api) + btree expressions (score_gap, PageSpeed, etc.)
+│   └── 003_rls.sql                   → Row Level Security — authenticated full read/write
+└── seed.sql                          → Données Annecy complètes (7 blocs, résultats réels + estimés)
+```
+
+**ENUMs créés** :
+- `statut_audit` : `en_cours | termine | erreur`
+- `type_concurrent` : `direct | indirect`
+- `role_utilisateur` : `admin | collaborateur`
+
+**Triggers** :
+- `on_auth_user_created` → crée automatiquement un profil dans `public.profiles` à chaque nouvel utilisateur Supabase Auth
+- `destinations_updated_at` → met à jour `updated_at` automatiquement
+
+**Index notables** :
+- GIN global sur `audits.resultats` et `audits.couts_api` (queries JSONB ad-hoc)
+- Btree expression sur `score_gap`, `score_visibilite_ot`, `note_google_ot`, `total_stock_physique`
+
+**RLS** : tout utilisateur `authenticated` peut lire et écrire toutes les tables. Les Route Handlers Next.js doivent utiliser `SUPABASE_SERVICE_ROLE_KEY` (bypass RLS automatique).
+
+**Seed Annecy** :
+- Destination Annecy (SIREN 200063402, INSEE 74010) + audit complet statut `termine`
+- `resultats` JSONB : 7 blocs complets avec toutes les données documentées
+- `couts_api` JSONB : agrégat par bloc (total audit ≈ 0,516 €)
+- 5 concurrents dans la table `competitors` (Chamonix, Évian, Aix-les-Bains, Saint-Gervais, La Clusaz)
+- Valeurs marquées "estimé" dans `schema-documentation.md` : `instagram.posts_count` Annecy, détails PageSpeed LCP/CLS/INP, `analyse_site_ot`
+
+**⚠️ Champ ambigu** : `competitors.type` (`direct | indirect`) — présent dans le schéma CONTEXT.md mais absent des types TypeScript. Conservé comme spécifié.
 
 #### Microservice — Résultats de validation
 - **34 968 communes** indexées depuis `identifiants-communes-2024.csv`
