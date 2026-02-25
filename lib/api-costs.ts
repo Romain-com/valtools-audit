@@ -17,4 +17,9 @@ export const API_COSTS = {
   data_economie: 0,             // API publique gratuite
   sirene: 0,                    // API publique gratuite (INSEE open data)
   datatourisme_stocks: 0,       // microservice local — gratuit
+  melodi_rp: 0,                 // API Mélodi INSEE RP — open data, gratuit
+  melodi_bpe: 0,                // API Mélodi INSEE BPE — open data, gratuit
+  airbnb_scraping: 0,           // scraping Playwright local — gratuit (risque CGU)
+  booking_scraping: 0,          // scraping Playwright local — gratuit (risque CGU)
+  viator_scraping: 0,           // scraping Playwright local — gratuit (risque CGU)
 } as const

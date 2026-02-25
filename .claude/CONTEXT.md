@@ -1,5 +1,5 @@
 # CONTEXT.MD — Destination Digital Audit App
-> Dernière mise à jour : Phase 2 — Bloc 5 Corrections déduplication + détail ✅ (2026-02-25)
+> Dernière mise à jour : Phase 2 — Bloc 6 Stock commercialisé en ligne (OTA + site OT) ✅ (2026-02-25)
 > Destination de test de référence : **Annecy** | Domaine OT : `lac-annecy.com`
 
 ---
@@ -289,6 +289,9 @@ PAGESPEED_API_KEY=AIza...
 | Posts récents + ratio OT/UGC | Apify instagram-hashtag-scraper | ✅ |
 | Santé technique (Core Web Vitals) | Google PageSpeed API | ✅ |
 | Stocks hébergements / activités / services | DATA Tourisme + Recherche Entreprises | ✅ Bloc 5 terminé |
+| Stock commercialisé OTA (hébergements) | Airbnb + Booking (Playwright) | ✅ Bloc 6 terminé |
+| Stock commercialisé OTA (activités) | Viator (Playwright — bloqué Cloudflare → 0) | ⚠️ Bloc 6 partiel |
+| Analyse site OT (réservable / lien OTA / listing) | Playwright site OT | ✅ Bloc 6 terminé |
 | Concurrents directs (3) + indirects (3) | OpenAI | ✅ |
 | Métriques concurrents | DataForSEO + Haloscan | ✅ |
 | Contenus GDoc/GSlides | OpenAI (copier-coller manuel) | ✅ |
@@ -545,19 +548,22 @@ const API_COSTS = {
 }                               // Total bloc ≈ 0.108 €
 ```
 
-#### Bloc 2 — Volume d'affaires (taxe de séjour) ✅ TERMINÉ (2026-02-24)
+#### Bloc 2 — Volume d'affaires (taxe de séjour) ✅ TERMINÉ (2026-02-24) + Enrichissement Mélodi ✅ (2026-02-25)
 
 **Architecture** :
 ```
-microservice/routes/epci.ts         → GET /epci?code_insee=XXX (nouveau endpoint)
+microservice/routes/epci.ts         → GET /epci?code_insee=XXX + GET /epci/communes?siren_epci=XXX
 
 app/api/blocs/volume-affaires/
-├── epci/route.ts    → Proxy microservice → résolution EPCI
-├── taxe/route.ts    → data.economie.gouv.fr (communes + groupements)
-└── openai/route.ts  → GPT-4o-mini (synthèse + indicateurs + part commune)
+├── epci/route.ts           → Proxy microservice → résolution EPCI
+├── epci-communes/route.ts  → Proxy microservice → communes d'un EPCI (NOUVEAU)
+├── taxe/route.ts           → data.economie.gouv.fr (communes + groupements)
+├── melodi/route.ts         → API Mélodi INSEE (RP 2022 + BPE D7) + OpenAI coefficients (NOUVEAU)
+└── openai/route.ts         → GPT-4o-mini (synthèse + indicateurs + part commune)
 
-lib/blocs/volume-affaires.ts        → Orchestrateur du bloc
+lib/blocs/volume-affaires.ts        → Orchestrateur du bloc (+ étape Mélodi + dispatch)
 types/volume-affaires.ts            → DonneesCollecteur + ResultatVolumeAffaires
+                                       + DonneesLogementCommune + Coefficients + DispatchTS + ResultatDispatchTS (NOUVEAU)
 ```
 
 **Source CSV EPCI** :
@@ -609,6 +615,60 @@ data.economie.gouv.fr : gratuit
 OpenAI gpt-4o-mini   : 1 appel = 0.001 €
 Total bloc           : 0.001 €
 ```
+
+**Enrichissement Mélodi — dispatch TS par commune** :
+
+**Flux** :
+```
+1. GET /epci/communes  → microservice → liste communes EPCI
+2. POST /melodi        → Mélodi RP 2022 (résidences secondaires) + BPE D7 (hébergements)
+                         + OpenAI coefficients selon profil destination
+3. Orchestrateur       → dispatcherTS() → DispatchTS[] avec part_pct + ts_estimee par commune
+```
+
+**API Mélodi (INSEE)** :
+- Auth : aucune — open data, gratuit
+- Rate limit : 30 req/min → batch de 10 communes × 2 appels = sleep 2100ms entre batches
+- RP 2022 : `GET /melodi/data/DS_RP_LOGEMENT_PRINC?GEO=COM-{insee}&OCS=DW_SEC_DW_OCC&TIME_PERIOD=2022&TDW=_T`
+  - ⚠️ Format GEO : `COM-74010` (pas juste `74010`)
+  - ⚠️ Période disponible : `2022` (pas 2021 ni 2023)
+  - Valeurs flottantes → toujours `Math.round()`
+- BPE D7 : `GET /melodi/data/DS_BPE?GEO=COM-{insee}&FACILITY_SDOM=D7`
+  - ⚠️ Dataset = `DS_BPE` (pas `BPE_EQUIPEMENTS`), dimension = `FACILITY_SDOM` (pas `TYPEQU`)
+  - Codes validés : D701=hôtels, D702=campings, D703=rés.tourisme, D705=villages, D710=meublés, D711=ch.d'hôtes
+
+**Coefficients fixes (nuitées/an)** :
+```typescript
+residence_secondaire: 30 | hotel_etablissement: 2000 | tourisme_etablissement: 1500
+camping_etablissement: 600 | autres_etablissement: 800
+```
+Ajustés par OpenAI selon profil (station_ski / bord_mer / bord_lac / ville / campagne / mixte).
+
+**ResultatDispatchTS** dans `ResultatVolumeAffaires.dispatch_ts` :
+- `mode` : `dispatch_epci` ou `reconstitution_totale`
+- `communes[]` : dispatch pour toutes les communes EPCI
+- `commune_cible` : la commune auditée avec `part_pct` + `ts_estimee`
+- `comparaison_bloc5` (optionnel) : ajouté par l'orchestrateur principal si Bloc 5 disponible
+
+**Coût enrichissement Mélodi** :
+```
+API Mélodi  : 0.000€ (open data INSEE)
+OpenAI      : +0.001€ (ajustement coefficients)
+TOTAL Bloc 2 après enrichissement : 0.002€
+```
+
+**Script de test** : `node test-bloc2-melodi.js "Annecy" "74010"` (microservice requis)
+
+**Tests validés — Annecy (CA Grand Annecy, 34 communes)** :
+- EPCI : 34 communes récupérées ✅
+- Annecy (74010) : 5 344 RS + 12 hôtels + 7 campings + 4 rés.tourisme + 2 villages + 25 meublés + 2 ch.d'hôtes ✅
+- Profil OpenAI : `bord_lac` — coefficients ajustés (hôtel 2000→2500, tourisme 1500→1800) ✅
+- Dispatch Annecy : **93.1%** de l'EPCI — TS estimée **3 203 030€** ✅
+- Total dispatché : 3 440 838€ ≈ 3 440 837€ — **écart 0.00%** ✅
+- Durée : **13.7s** (34 communes × 4 batches × 2 appels Mélodi) ✅
+- Pas de 429 rate-limit ✅
+
+⚠️ **Observation** : 19/34 communes ont `source: 'absent'` (petites communes rurales non indexées dans Mélodi). Normal — Annecy représente ~93% du poids d'hébergement de l'EPCI. Le dispatch reste cohérent.
 
 #### Bloc 3 — Schéma digital & Santé technique ✅ TERMINÉ (2026-02-24)
 
@@ -1021,6 +1081,96 @@ TOTAL                          : 0.001€
 ```
 
 
+#### Bloc 6 — Stock commercialisé en ligne (OTA + site OT) ✅ TERMINÉ (2026-02-25)
+
+**Architecture** :
+```
+microservice/routes/bbox.ts                 → GET /bbox?code_insee=XXX (bounding box via geo.api.gouv.fr)
+
+lib/scrapers/
+  site-ot.ts   → scraperSiteOT(browser, domaine_ot) : analyse hébergements + activités OT
+  airbnb.ts    → scraperAirbnb(browser, bbox, destination) : découpage quadrant récursif
+  booking.ts   → scraperBooking(browser, destination) : compteur total propriétés
+  viator.ts    → scraperViator(browser, destination) : activités (bloqué Cloudflare → 0)
+
+app/api/blocs/stock-en-ligne/
+  site-ot/route.ts    → POST (runtime nodejs, maxDuration 120s)
+  airbnb/route.ts     → POST (runtime nodejs, maxDuration 300s)
+  booking/route.ts    → POST (runtime nodejs, maxDuration 120s)
+  viator/route.ts     → POST (runtime nodejs, maxDuration 120s)
+  synthese/route.ts   → OpenAI synthèse
+
+lib/blocs/stock-en-ligne.ts  → orchestrateur : browser Playwright partagé, Promise.allSettled
+types/stock-en-ligne.ts      → tous les types TypeScript
+scripts/test-bloc6.js        → test standalone (node scripts/test-bloc6.js "Annecy" "74010" "lac-annecy.com")
+```
+
+**Trois indicateurs clés** :
+```
+taux_dependance_ota       = (airbnb + booking) / bloc5.hebergements.total_unique
+taux_visibilite_activites = viator / bloc5.activites.total_unique
+taux_reservable_direct    = reservable_ot / (airbnb + booking)
+```
+
+**Architecture Playwright** :
+- `lib/scrapers/*.ts` sont des fonctions pures qui reçoivent un `browser: Browser`
+- L'orchestrateur instancie UN seul browser partagé → `Promise.allSettled` des 4 scrapers
+- Les route handlers instancient chacun leur propre browser (usage individuel/debug)
+- `export const runtime = 'nodejs'` obligatoire sur chaque route handler (pas Edge)
+
+**Airbnb — découpage quadrant** :
+- `SEUIL_MAX = 1000`, `PROFONDEUR_MAX = 6`, `DELAI_MS = 1800`
+- Si `nombre >= SEUIL_MAX` → découper en 4 quadrants récursivement
+- ⚠️ Condition `>= SEUIL_MAX` (pas `>`) — Airbnb peut retourner exactement 1000
+- ⚠️ Si le texte contient "+" → forcer `SEUIL_MAX + 1` pour déclencher subdivision
+- Bbox depuis `GET /bbox` microservice → geo.api.gouv.fr `?fields=contour,centre`
+- Dans le script de test : appel direct geo.api.gouv.fr (sans microservice) — le microservice a besoin d'être redémarré pour voir la nouvelle route `/bbox`
+
+**Booking** :
+- Sélecteur `h1` en premier — contient directement "Annecy : 277 établissements trouvés"
+- Les filtres `ht_id` (par type) ne changent pas le compteur h1 → 1 seul appel (total)
+- `detail` toujours `{ hotels: 0, ... }` — sous-catégories non extractibles via cette méthode
+
+**Viator** :
+- Cloudflare bloque systématiquement le headless Playwright → retourne 0 sans erreur
+- Idem pour GetYourGuide et TripAdvisor — même protection Cloudflare
+- Alternative possible : Apify actor `apify/tripadvisor-scraper` si ce taux est critique
+
+**Site OT** :
+- Teste patterns d'URL `/hebergements`, `/hebergement`, `/ou-dormir`, etc.
+- Détecte moteurs de réservation : Bokun, Regiondo, FareHarbor, Checkfront, Rezdy (dans le HTML)
+- Détecte liens OTA : Booking, Airbnb, Viator, GetYourGuide, Tripadvisor, Abritel, Gîtes de France, Clevacances
+- Classification : `reservable_direct` > `lien_ota` > `listing_seul` > `absent`
+
+**Tests validés — Annecy (INSEE 74010)** :
+| Source | Résultat | Note |
+|---|---|---|
+| Airbnb | 4 246 annonces (21 zones) | Découpage quadrant fonctionnel |
+| Booking | 277 propriétés | Correct |
+| Viator | 0 | Cloudflare — limitation connue |
+| Site OT (héb.) | 34 fiches — listing_seul | Correct |
+| Site OT (act.) | 64 fiches — listing_seul | Correct |
+| Taux réservable direct | 0.8% | (34 fiches OT / 4 523 OTA) |
+
+Durée : 143s | Coût : 0.001€ (OpenAI uniquement)
+
+**Coût du bloc** :
+```
+Playwright (Chromium)  : gratuit (local)
+Airbnb/Booking/Viator  : gratuit (risque CGU — usage interne uniquement)
+OpenAI gpt-4o-mini     : 0.001€
+TOTAL                  : 0.001€
+```
+
+**Pièges critiques** :
+- ⚠️ Airbnb `>= SEUIL_MAX` (pas `>`) — sinon exactement 1000 ne déclenche pas la subdivision
+- ⚠️ Airbnb texte "+" → forcer SEUIL_MAX + 1 immédiatement
+- ⚠️ Booking : `h1` seul fonctionne (les autres sélecteurs sont obsolètes)
+- ⚠️ Viator + GYG + TripAdvisor : Cloudflare → 403 headless systématique
+- ⚠️ Microservice `/bbox` : la route est dans le code mais le microservice doit être redémarré pour la prendre en compte
+- ⚠️ `export const runtime = 'nodejs'` obligatoire sur tous les route handlers Playwright
+- ⚠️ `maxDuration: 300` pour le route handler Airbnb (grandes villes = 5-8 min)
+
 ### Phase 3 — Orchestration et UX
 - Page lancement + autocomplete + gestion doublon
 - Progression temps réel (Supabase Realtime)
@@ -1086,7 +1236,9 @@ DATA_TOURISME_API_URL=http://localhost:3001
 | `test-bloc1.js` | Bloc 1 — test standalone Annecy (flux complet sans Next.js) |
 | `test-trevoux.js` | Bloc 1 — test intégration Trévoux (vraies APIs, microservice requis) |
 | `test-bloc2.js` | Bloc 2 — test Vanves + Annecy (taxe de séjour, microservice requis) |
+| `test-bloc2-melodi.js` | Bloc 2 enrichissement — dispatch TS par commune via Mélodi (Annecy, microservice requis) |
 | `test-bloc3.js` | Bloc 3 — test Annecy (SERP 5 requêtes, classification, Haloscan+fallback DataForSEO, PageSpeed, Analyse OT, OpenAI) |
 | `test-bloc4.js` | Bloc 4 Phase A+B — test Annecy (Haloscan 8 seeds, DataForSEO related 4 seeds, ranked, classification 300 kw, SERP live 8, synthèse — flag `--phase-b`) |
 | `test-bloc5.js` | Bloc 5 — test Annecy (DATA Tourisme /stocks, Recherche Entreprises, déduplication, OpenAI) |
 | `scripts/scan-datatourisme-types.js` | Préparation Bloc 5 — scan tous types @type DATA Tourisme sans filtre (node scripts/scan-datatourisme-types.js [code_insee]) |
+| `scripts/test-bloc6.js` | Bloc 6 — test Annecy (bbox, Airbnb, Booking, Viator, site OT, OpenAI — node scripts/test-bloc6.js "Annecy" "74010" "lac-annecy.com") |
