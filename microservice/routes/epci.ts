@@ -1,10 +1,12 @@
 // Route GET /epci — association commune → EPCI
 // Charge deux CSV au démarrage du microservice et expose un lookup par code INSEE
+// Route GET /epci/communes — liste des communes d'un EPCI (inverse)
 
 import { Router, Request, Response } from 'express'
 import fs from 'fs'
 import path from 'path'
 import { parse } from 'csv-parse/sync'
+import { getCommuneParInsee } from '../services/csv-reader'
 
 const router = Router()
 
@@ -147,6 +149,44 @@ router.get('/', (req: Request, res: Response) => {
     type_epci: infos.type,
     population_epci: infos.population,
   })
+})
+
+// ─── Route /communes ──────────────────────────────────────────────────────────
+
+/**
+ * GET /epci/communes?siren_epci=XXX
+ * Retourne toutes les communes membres d'un EPCI.
+ * Utilisé par l'enrichissement Mélodi du Bloc 2 pour dispatcher la taxe de séjour.
+ */
+router.get('/communes', (req: Request, res: Response) => {
+  const siren_epci = (req.query['siren_epci'] as string)?.trim()
+
+  if (!siren_epci) {
+    res.status(400).json({ error: 'Paramètre siren_epci requis' })
+    return
+  }
+
+  const communes: { code_insee: string; nom: string }[] = []
+
+  for (const [code_insee, epci] of mapCommuneVersEpci) {
+    if (epci === siren_epci) {
+      const commune = getCommuneParInsee(code_insee)
+      communes.push({
+        code_insee,
+        nom: commune?.nom ?? code_insee,
+      })
+    }
+  }
+
+  if (communes.length === 0) {
+    res.status(404).json({ error: `Aucune commune trouvée pour l'EPCI ${siren_epci}` })
+    return
+  }
+
+  // Tri par code INSEE pour un ordre déterministe
+  communes.sort((a, b) => a.code_insee.localeCompare(b.code_insee))
+
+  res.json({ siren_epci, communes })
 })
 
 export default router
