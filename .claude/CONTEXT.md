@@ -1,5 +1,5 @@
 # CONTEXT.MD — Destination Digital Audit App
-> Dernière mise à jour : Validation Supabase complète ✅ (2026-02-25)
+> Dernière mise à jour : Assets SVG officiels Valraiso — Navbar + Login (2026-02-25)
 > Destination de test de référence : **Annecy** | Domaine OT : `lac-annecy.com`
 
 ---
@@ -1543,6 +1543,25 @@ Fichier : `components/ui/CoutTooltip.tsx`
 | Résultats — bouton "Coûts API" | Montant total visible + `i` à côté |
 | Résultats — en-tête de chaque bloc | Icône `i` remplace le texte brut |
 | Onglet Coûts API | Inchangé (tableau détaillé — c'est sa raison d'être) |
+
+#### Assets SVG officiels Valraiso — Navbar + Login (2026-02-25)
+
+Fichiers source : `ressources/` (inline dans TSX — pas de `/public/`, pas de requête HTTP supplémentaire).
+
+**Fichiers modifiés** :
+- `components/layout/Navbar.tsx` — logo officiel
+- `app/login/page.tsx` — logo + décorations fond
+
+**Navbar** :
+- Icône `Icon-Valraiso.svg` inlinée (32×32) : rectangle arrondi crème `#fff7ee` + A orange `#ff450b`
+- Wordmark `Logo-Valraiso-blanc.svg` : paths blancs, viewBox cropée `285 88 600 158` (texte seul, sans icône)
+- Séparateur `/ Audit Digital` conservé
+
+**Login** :
+- Logo `Logo-Valraiso-couleurs.svg` centré (viewBox `60 85 820 168`, `h-12`) : texte navy `#18152b` + A orange `#ff450b`
+- Décoration fond haut-droite : `Chemin-plein.svg` (vague orange pleine, `opacity-[0.07]`, `w-[480px]`, `-top-24 -right-48`)
+- Décoration fond bas-gauche : `Chemin-pointille-orange.svg` (tracé pointillé, `opacity-25`, `w-[380px]`, `-bottom-40 -left-32`)
+- Fonds dégradés abstraits précédents supprimés
 
 ---
 
