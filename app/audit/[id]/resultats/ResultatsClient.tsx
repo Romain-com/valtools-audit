@@ -717,9 +717,15 @@ export default function ResultatsClient({ audit }: { audit: AuditFull }) {
         <div className="p-4 border-b border-brand-border">
           <Link
             href="/dashboard"
-            className="text-xs text-text-secondary hover:text-brand-orange transition-colors flex items-center gap-1 mb-2"
+            className="text-xs text-text-secondary hover:text-brand-orange transition-colors flex items-center gap-1 mb-1"
           >
             ← Dashboard
+          </Link>
+          <Link
+            href={`/audit/${audit.id}/progression`}
+            className="text-xs text-text-secondary hover:text-brand-orange transition-colors flex items-center gap-1 mb-2"
+          >
+            ← Progression
           </Link>
           <h2 className="font-bold text-brand-navy text-sm leading-tight">{dest.nom}</h2>
           <p className="text-xs text-text-muted mt-0.5">Dép. {dest.code_departement} — {dateAudit}</p>

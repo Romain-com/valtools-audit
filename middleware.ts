@@ -13,6 +13,11 @@ export async function middleware(request: NextRequest) {
   // Vérification de session via Supabase
   const { supabaseResponse, user } = await updateSession(request)
 
+  // Routes API — passer directement sans redirect (appels serveur-serveur sans cookies)
+  if (pathname.startsWith('/api/')) {
+    return supabaseResponse
+  }
+
   // Routes publiques autorisées sans auth
   const publicRoutes = ['/login']
   const isPublicRoute = publicRoutes.some((route) => pathname.startsWith(route))

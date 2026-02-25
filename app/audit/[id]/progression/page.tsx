@@ -668,7 +668,10 @@ export default function ProgressionPage() {
     })
   }
 
-  // ── Chargement initial ──
+  // ── Réf pour conserver le nom destination entre les updates Realtime ──
+  const nomDestinationRef = useRef<string>('')
+
+  // ── Chargement initial + logs existants ──
   useEffect(() => {
     async function charger() {
       const { data, error } = await supabase
@@ -683,15 +686,92 @@ export default function ProgressionPage() {
       }
 
       const auditData = data as unknown as AuditData
+      if (auditData.destinations?.nom) nomDestinationRef.current = auditData.destinations.nom
       setAudit(auditData)
       setBlocs(extraireBlocs(auditData.resultats, auditData.couts_api))
       setLoading(false)
     }
 
+    // Chargement des logs existants
+    async function chargerLogs() {
+      const { data } = await supabase
+        .from('audit_logs')
+        .select('id, bloc, niveau, message, detail, created_at')
+        .eq('audit_id', id)
+        .order('created_at', { ascending: true })
+        .limit(100)
+
+      if (data && data.length > 0) {
+        setLogs(data as LogEntry[])
+        if ((data as LogEntry[]).some(l => l.niveau === 'error')) setLogsOuverts(true)
+      }
+    }
+
     charger()
+    chargerLogs()
   }, [id])
 
-  // ── Supabase Realtime — écoute des changements d'audit ──
+  // ── Polling actif toutes les 3s (fallback Realtime + source principale) ──
+  useEffect(() => {
+    let intervalId: ReturnType<typeof setInterval> | null = null
+
+    async function pollStatut() {
+      try {
+        const res = await fetch(`/api/orchestrateur/statut?audit_id=${id}`)
+        if (!res.ok) return
+        const data = await res.json() as {
+          statut: string
+          blocs_statuts: Record<string, StatutBloc>
+          couts_api: Record<string, { total?: number; total_bloc?: number }> | null
+          logs: LogEntry[]
+        }
+
+        // Mettre à jour l'audit en préservant le nom destination
+        setAudit(prev => {
+          if (!prev) return prev
+          const next: AuditData = {
+            ...prev,
+            statut: data.statut,
+            resultats: { ...(prev.resultats ?? {}), blocs_statuts: data.blocs_statuts },
+            couts_api: data.couts_api,
+            destinations: { nom: nomDestinationRef.current },
+          }
+          setBlocs(extraireBlocs(next.resultats, next.couts_api))
+          return next
+        })
+
+        // Fusionner les logs (éviter doublons par id)
+        if (data.logs?.length > 0) {
+          setLogs(prev => {
+            const existingIds = new Set(prev.map(l => l.id))
+            const nouveaux = data.logs.filter(l => !existingIds.has(l.id))
+            if (nouveaux.length === 0) return prev
+            if (nouveaux.some(l => l.niveau === 'error')) setLogsOuverts(true)
+            return [...prev, ...nouveaux]
+          })
+        }
+
+        // Arrêter le polling si terminé ou en erreur
+        if (data.statut === 'termine' || data.statut === 'erreur') {
+          if (intervalId) clearInterval(intervalId)
+        }
+      } catch {
+        // Erreur silencieuse — on réessaie au prochain tick
+      }
+    }
+
+    // Ne démarrer le polling qu'une fois le chargement initial terminé
+    if (!loading) {
+      pollStatut() // Premier appel immédiat
+      intervalId = setInterval(pollStatut, 3000)
+    }
+
+    return () => {
+      if (intervalId) clearInterval(intervalId)
+    }
+  }, [id, loading])
+
+  // ── Supabase Realtime — écoute des changements d'audit (bonus) ──
   useEffect(() => {
     const channel = supabase
       .channel(`audit-${id}`)
@@ -705,7 +785,11 @@ export default function ProgressionPage() {
         },
         (payload) => {
           const updated = payload.new as AuditData
-          setAudit(updated)
+          // Préserver le nom destination (pas dans le payload Realtime)
+          setAudit(prev => ({
+            ...updated,
+            destinations: { nom: nomDestinationRef.current || prev?.destinations?.nom || '' },
+          }))
           setBlocs(extraireBlocs(updated.resultats, updated.couts_api))
         }
       )
@@ -716,7 +800,7 @@ export default function ProgressionPage() {
     }
   }, [id])
 
-  // ── Supabase Realtime — écoute des logs d'audit ──
+  // ── Supabase Realtime — écoute des logs d'audit (bonus) ──
   useEffect(() => {
     const channel = supabase
       .channel(`logs-${id}`)
@@ -730,12 +814,12 @@ export default function ProgressionPage() {
         },
         (payload) => {
           const newLog = payload.new as LogEntry
-          setLogs(prev => [...prev, newLog])
-
-          // Ouvrir automatiquement le panneau si une erreur apparaît
-          if (newLog.niveau === 'error') {
-            setLogsOuverts(true)
-          }
+          setLogs(prev => {
+            // Éviter doublons si le polling a déjà récupéré ce log
+            if (prev.some(l => l.id === newLog.id)) return prev
+            return [...prev, newLog]
+          })
+          if (newLog.niveau === 'error') setLogsOuverts(true)
         }
       )
       .subscribe()
@@ -769,12 +853,33 @@ export default function ProgressionPage() {
     }
   }, [audit, loading, id])
 
+  // ── Rechargement des resultats complets avant d'ouvrir une modale ──
+  // Le polling ne met à jour que blocs_statuts — les données de phase (keywords, concurrents)
+  // doivent être relues depuis Supabase au moment de la validation.
+  async function ouvrirModalValidation(blocId: string) {
+    const { data } = await supabase
+      .from('audits')
+      .select('resultats, couts_api')
+      .eq('id', id)
+      .single()
+
+    if (data) {
+      setAudit(prev => prev ? {
+        ...prev,
+        resultats: data.resultats as Record<string, unknown>,
+        couts_api: data.couts_api as Record<string, { total?: number; total_bloc?: number }>,
+      } : prev)
+    }
+
+    setValidationBloc(blocId)
+  }
+
   // ── Ouverture automatique de la modale de validation ──
   useEffect(() => {
     const blocValidation = blocs.find(b => b.statut === 'en_attente_validation')
     if (blocValidation && validationBloc === null) {
       // Délai court pour laisser l'UI se mettre à jour visuellement
-      const timer = setTimeout(() => setValidationBloc(blocValidation.id), 400)
+      const timer = setTimeout(() => ouvrirModalValidation(blocValidation.id), 400)
       return () => clearTimeout(timer)
     }
   }, [blocs])
@@ -800,6 +905,9 @@ export default function ProgressionPage() {
       body: JSON.stringify({ audit_id: id, concurrents_valides: concurrentsValides }),
     }).catch(err => console.error('[progression] Erreur lancement Segment C :', err))
   }
+
+  // ── Nom destination (depuis ref ou audit) ──
+  const nomDestination = nomDestinationRef.current || audit?.destinations?.nom || ''
 
   // ── Métriques ──
   const nbTermines = blocs.filter(b => b.statut === 'termine').length
@@ -847,7 +955,7 @@ export default function ProgressionPage() {
           Dashboard
         </Link>
         <h1 className="text-2xl font-bold text-brand-navy">
-          {audit?.destinations?.nom || 'Audit en cours'}
+          {nomDestination || 'Audit en cours'}
         </h1>
         <p className="text-text-secondary text-sm mt-1">
           Progression de l&apos;analyse digitale
@@ -875,7 +983,7 @@ export default function ProgressionPage() {
             </p>
           </div>
           <button
-            onClick={() => setValidationBloc(blocEnAttenteValidation.id)}
+            onClick={() => ouvrirModalValidation(blocEnAttenteValidation.id)}
             className="text-xs font-semibold px-3 py-1.5 bg-amber-600 text-white rounded hover:bg-amber-700 transition-colors"
           >
             Valider
@@ -919,7 +1027,7 @@ export default function ProgressionPage() {
             {/* Bouton valider */}
             {bloc.statut === 'en_attente_validation' && (
               <button
-                onClick={() => setValidationBloc(bloc.id)}
+                onClick={() => ouvrirModalValidation(bloc.id)}
                 className="text-xs px-2.5 py-1 bg-amber-500 text-white rounded font-medium hover:bg-amber-600 transition-colors shrink-0"
               >
                 Valider
@@ -955,7 +1063,7 @@ export default function ProgressionPage() {
         logs={logs}
         ouvert={logsOuverts}
         onToggle={() => setLogsOuverts(prev => !prev)}
-        nomDestination={audit?.destinations?.nom ?? ''}
+        nomDestination={nomDestination}
         blocsStatuts={blocsStatuts}
         statutAudit={audit?.statut ?? ''}
       />

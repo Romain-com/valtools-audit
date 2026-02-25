@@ -1680,6 +1680,37 @@ Tous avec `export const runtime = 'nodejs'` (Playwright dans Bloc 6).
 | Segment C (Bloc 7B) | 2-3 min | 0.05 € |
 | **Total** | **25-40 min** | **~2.50-3.80 €** |
 
+### Correctifs post-Phase 3B (2026-02-25)
+
+#### 1. Middleware — Routes API non authentifiées
+
+`middleware.ts` : les routes `/api/*` ne sont plus redirigées vers `/login`.
+
+**Problème** : les blocs appelaient des sous-routes via `fetch('http://localhost:3000/api/blocs/...')` sans cookies d'auth → le middleware retournait du HTML → `JSON.parse` échouait.
+
+**Correction** :
+```typescript
+// Ajouté AVANT le check !user
+if (pathname.startsWith('/api/')) {
+  return supabaseResponse
+}
+```
+
+#### 2. Page progression — Polling actif (remplacement Realtime)
+
+Supabase Realtime `postgres_changes` ne fonctionnait pas de façon fiable en local. Remplacé par un **polling toutes les 3s** via `/api/orchestrateur/statut`.
+
+**Comportements ajoutés** :
+- Logs existants chargés au montage (pas seulement les nouveaux via INSERT)
+- Déduplication des logs (polling + Realtime peuvent ramener le même log)
+- `nomDestinationRef` : ref pour préserver le nom de destination (absent du payload Realtime)
+- Supabase Realtime conservé en bonus si disponible
+- Polling s'arrête automatiquement quand `statut === 'termine'`
+
+#### 3. Page résultats — Lien "← Progression"
+
+`app/audit/[id]/resultats/ResultatsClient.tsx` : lien "← Progression" ajouté dans la sidebar, sous "← Dashboard", pointant vers `/audit/[id]/progression`.
+
 ### Phase 4 — Page de résultats (intégrée Phase 3A)
 ✅ Structure complète affichée — données réelles via seed Annecy.
 
