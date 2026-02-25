@@ -167,6 +167,14 @@ export async function chargerOuConstruireIndex(): Promise<void> {
 }
 
 /**
+ * Retourne tous les filepaths d'une commune depuis l'index RAM.
+ * Utilisé par les endpoints qui ont besoin d'accéder aux fichiers bruts sans filtrage.
+ */
+export function getFilepathsParCommune(code_insee: string): string[] {
+  return indexParInsee.get(code_insee) ?? []
+}
+
+/**
  * Retourne les POI d'une commune filtrés par type.
  * Lit les fichiers JSON individuellement à la demande (pas de données en RAM hors filepaths).
  *

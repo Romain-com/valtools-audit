@@ -6,6 +6,8 @@ import { chargerOuConstruireIndex } from './services/datatourisme'
 import routesCommunes from './routes/communes'
 import routesPOI from './routes/poi'
 import routesEPCI from './routes/epci'
+import routesScanTypes from './routes/scan-types'
+import routesStocks from './routes/stocks'
 
 const app = express()
 const PORT = parseInt(process.env.PORT || '3001', 10)
@@ -39,6 +41,8 @@ try {
 app.use('/communes', routesCommunes)
 app.use('/poi', routesPOI)
 app.use('/epci', routesEPCI)
+app.use('/scan-types', routesScanTypes)
+app.use('/stocks', routesStocks)
 
 // Route de santé — utile pour vérifier que le serveur répond
 app.get('/health', (_req, res) => {

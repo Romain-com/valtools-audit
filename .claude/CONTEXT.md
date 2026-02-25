@@ -1,5 +1,5 @@
 # CONTEXT.MD — Destination Digital Audit App
-> Dernière mise à jour : Phase 2 — Bloc 3 finalisé avec fallback DataForSEO domain_rank_overview (2026-02-24)
+> Dernière mise à jour : Phase 2 — Bloc 5 Stocks physiques ✅ (2026-02-25)
 > Destination de test de référence : **Annecy** | Domaine OT : `lac-annecy.com`
 
 ---
@@ -288,7 +288,7 @@ PAGESPEED_API_KEY=AIza...
 | Volume hashtag Instagram (postsCount) | Apify instagram-hashtag-stats | ✅ |
 | Posts récents + ratio OT/UGC | Apify instagram-hashtag-scraper | ✅ |
 | Santé technique (Core Web Vitals) | Google PageSpeed API | ✅ |
-| Stocks hébergements / activités / services | Microservice DATA Tourisme | ⏳ index prêt — endpoint /stocks à implémenter (Bloc 8) |
+| Stocks hébergements / activités / services | DATA Tourisme + Recherche Entreprises | ✅ Bloc 5 terminé |
 | Concurrents directs (3) + indirects (3) | OpenAI | ✅ |
 | Métriques concurrents | DataForSEO + Haloscan | ✅ |
 | Contenus GDoc/GSlides | OpenAI (copier-coller manuel) | ✅ |
@@ -301,8 +301,7 @@ PAGESPEED_API_KEY=AIza...
 - **Format** : fichiers JSON organisés par région / département
 - **Accès** : microservice Node.js local (Express) sur Mac, tourne en arrière-plan
 - **Stratégie** : indexation légère au démarrage (nom, type, commune, GPS), filtrage à la volée, streaming sans charger en RAM
-- **Endpoints existants** : `GET /communes?nom=XXX` + `GET /poi?code_insee=XXX&limit=XXX`
-- **Endpoint à créer (Bloc 8)** : `GET /stocks?code_insee=XXX` → counts hébergements / activités / services
+- **Endpoints existants** : `GET /communes?nom=XXX` + `GET /poi?code_insee=XXX&limit=XXX` + `GET /stocks?code_insee=XXX` + `GET /scan-types?code_insee=XXX`
 - **⚠️ À faire avant de coder** : ouvrir un fichier JSON et identifier la clé exacte du nom de commune
 
 ---
@@ -741,10 +740,280 @@ Total bloc            :             ≈ 0.043-0.081 €
 Exemple Annecy        : 1 Haloscan + 1 DataForSEO fallback + 3 OpenAI = 0.049 €
 ```
 
-#### Blocs suivants à implémenter
-- Social media (Instagram — hashtag stats + posts récents)
+#### Bloc 4 — Visibilité SEO & Gap Transactionnel ✅ TERMINÉ (2026-02-24)
+
+**Architecture** :
+```
+app/api/blocs/visibilite-seo/
+├── haloscan-market/route.ts     → 8 seeds Haloscan keywords/overview en parallèle
+├── dataforseo-related/route.ts  → 4 seeds DataForSEO related_keywords (enrichissement corpus)
+├── dataforseo-ranked/route.ts   → ranked_keywords domaine OT (200 keywords, tri volume desc)
+├── classification/route.ts      → OpenAI filtrage + classification + détection gap (batch 50)
+├── serp-transac/route.ts        → DataForSEO SERP live (7-8 appels, Phase B)
+└── synthese/route.ts            → OpenAI synthèse gap Phase B
+
+lib/blocs/visibilite-seo-phase-a.ts  → orchestrateur Phase A (automatique)
+lib/blocs/visibilite-seo-phase-b.ts  → orchestrateur Phase B (déclenché après validation)
+types/visibilite-seo.ts              → tous les types TypeScript du bloc
+```
+
+**Architecture en deux phases avec pause utilisateur** :
+
+Phase A (automatique, ~0.116€) :
+```
+Promise.allSettled([
+  Haloscan market (8 seeds ‖),       ← PAA + CPC — source prioritaire
+  DataForSEO related (4 seeds ‖),    ← enrichissement corpus — source complémentaire
+  DataForSEO ranked (domaine OT),    ← seule source obligatoire
+])
+→ Fusion corpus marché → classification OpenAI (300 kw max, 6 batches)
+→ PAUSE : UI affiche tableau validation → utilisateur coche/décoche → confirme
+statut: 'en_attente_validation'
+```
+
+Phase B (déclenchée après validation, ~0.05€) :
+```
+DataForSEO SERP live (7-8 appels) → OpenAI synthèse gap
+statut: 'terminé'
+```
+
+**Haloscan keywords/overview** (différent de domains/overview) :
+- Endpoint : `POST https://api.haloscan.com/api/keywords/overview`
+- ⚠️ `serp` retiré de `requested_data` — non utilisé en Phase A, économise du temps de réponse
+- 8 seeds couvrant toutes les intentions touristiques :
+  ```
+  "[destination]", "tourisme [destination]", "que faire [destination]",
+  "activités [destination]", "hébergement [destination]", "visiter [destination]",
+  "vacances [destination]", "week-end [destination]"
+  ```
+- `keyword_match` + `similar_highlight` → keywords marché
+- `related_question` → PAA (exclusif Haloscan — DataForSEO related ne fournit pas de PAA)
+- `ads_metrics.cpc` peut être null — signal transac = `cpc > 0.30`
+- Coût : 1 crédit/appel = 0.010€
+
+**DataForSEO related_keywords** (NOUVEAU — enrichissement corpus marché) :
+- Endpoint : `POST https://api.dataforseo.com/v3/dataforseo_labs/google/related_keywords/live`
+- 4 seeds : `[destination]`, `"tourisme [destination]"`, `"activités [destination]"`, `"visiter [destination]"`
+- Payload par seed : `{ keyword, location_code: 2250, language_code: "fr", limit: 100, depth: 2, include_seed_keyword: true }`
+- Chemin de parsing : `data?.tasks?.[0]?.result?.[0]?.items ?? []`
+- Champs : `item.keyword_data.keyword`, `item.keyword_data.keyword_info.search_volume`, `item.keyword_data.keyword_info.cpc`
+- Coût : 0.006€/seed = 0.024€ pour les 4 seeds
+- ⚠️ **Filtre pertinence obligatoire** avant fusion — un keyword related sans mention de la destination est trop générique :
+  ```typescript
+  // Garder si : contient la destination OU ≥ 3 mots (assez spécifique)
+  if (!cle.includes(dest) && cle.split(' ').length < 3) continue
+  ```
+- ⚠️ Haloscan a priorité lors de la fusion — ne jamais écraser un keyword déjà présent (CPC Haloscan plus fiable)
+- Source identifiée dans `KeywordMarche.source = 'dataforseo_related'`
+
+**DataForSEO ranked_keywords** :
+- Endpoint : `POST https://api.dataforseo.com/v3/dataforseo_labs/google/ranked_keywords/live`
+- Chemin de parsing : `data?.tasks?.[0]?.result?.[0]?.items ?? []`
+- Champ position : `item.ranked_serp_element.serp_item.rank_group` (pas rank_absolute)
+- ⚠️ **Source obligatoire** — si ranked échoue, Phase A est interrompue (throw dans l'orchestrateur)
+- Coût : 0.006€/appel
+
+**Fusion corpus marché** (dans l'orchestrateur Phase A) :
+```typescript
+// Promise.allSettled — une panne d'une source ne bloque pas les deux autres
+// ranked_result est obligatoire (throw si absent), haloscan/related peuvent être null
+const mapKeywords = new Map<string, KeywordMarche>()
+// 1. Haloscan en premier (priorité CPC)
+// 2. DataForSEO related filtrés en complément (ne pas écraser Haloscan)
+```
+
+**Classification OpenAI** :
+- Pré-filtre regex avant OpenAI — keywords évidents hors-tourisme éliminés d'office :
+  ```
+  /^météo\b/i, /\bsncf\b/i, /horaires? (train|bus|tram|car)\b/i, /^itinéraire\b/i, etc.
+  ```
+- Limite : **300 keywords** (augmenté depuis 200 pour exploiter le corpus hybride)
+- Batch de 50 keywords max par appel → 6 batches pour 300 kw
+- Catégories : `activités | hébergements | services | culture | restauration | transports | hors-tourisme`
+- `gap: true` si touristique ET (pos_ot null OU pos_ot > 20)
+- ⚠️ **Règle dure post-OpenAI** : si `position_ot ≤ 20` alors `gap = false`
+- `intent_transactionnel: true` si cpc > 0.30 OU keyword contient mots-clés booking
+
+**Trois volumes distincts dans `ResultatPhaseA`** (ne pas les additionner) :
+```typescript
+volume_marche_seeds    // demande autour de la destination (Haloscan, 8 seeds)
+volume_positionne_ot   // périmètre du site OT dans Google (DataForSEO ranked)
+volume_transactionnel_gap  // potentiel commercial non capté (gap + transac uniquement)
+```
+⚠️ Ces 3 champs ont des périmètres différents — afficher séparément avec `note_volumes`.
+
+**Sélection Phase B** :
+- 50% keywords transac + gap (plus fort volume)
+- 50% absences totales (pos_ot null)
+- L'utilisateur peut modifier via `selectionne_phase_b: true`
+- Max 8 appels SERP live
+
+**Estimation CTR par position** (dans dataforseo-ranked + synthese) :
+```
+pos 1: 28% | pos 2: 15% | pos 3: 10% | pos 4: 7% | pos 5: 5%
+pos 6: 4%  | pos 7: 3%  | pos 8: 2.5% | pos 9: 2% | pos 10: 1.5%
+pos 11-20: 1% | pos >20: 0.5%
+```
+
+**Coûts** :
+```
+Haloscan keywords (8 seeds)         : 0.080€
+DataForSEO related (4 seeds)        : 0.024€
+DataForSEO ranked (1 appel)         : 0.006€
+OpenAI classification (4-6 appels)  : 0.004-0.006€
+DataForSEO SERP live (7-8 appels)   : 0.042-0.048€  (Phase B)
+OpenAI synthèse                     : 0.001€  (Phase B)
+TOTAL                               ≈ 0.157-0.165€
+```
+
+**Test validé Annecy — Phase A + Phase B avec corrections (2026-02-24)** :
+```
+Phase A :
+  Haloscan : 117 kw | DataForSEO related : 125 kw (avant filtre) → corpus fusionné : 223 kw uniques
+  160 classifiés | 21 PAA | 35 gaps transac | 69 absences totales
+  Coût Phase A : 0.116€ | Durée : ~156s
+
+Phase B :
+  8 SERP live (4 transac + 4 absences)
+  - OT absent sur "evènement", "plage de", "randonnée autour de moi", "fromagerie autour de moi"
+  - OT position 1 sur "que faire à annecy", "visiter annecy", "tourisme à annecy" → exclus du top 5
+  - "week end a annecy" → OT pos 4 (pas un gap)
+  Vrais gaps confirmés live : 35 (croisement Phase A ↔ SERP live)
+  trafic_estime_capte : 512 484 visites/mois (CTR par position, depuis dataforseo-ranked)
+  taux_captation : 80% (512 484 / 640 650 — plafonné à 100%)
+  Score gap : 8/10
+  Top 5 opportunités : evènement (49500), plage de (27100), randonnée autour de moi (27100),
+                       fromagerie autour de moi (22200), hôtel annecy spa (9900)
+  PAA sans réponse OT : 5 (que faire à annecy, que faire ce week-end, quand il pleut, lac artificiel ?, où dormir)
+  Coût Phase B : 0.049€ | TOTAL Bloc 4 : 0.165€ | Durée totale : ~194s
+```
+
+**Pièges critiques** :
+- `api-costs.ts` : 3 entrées Bloc 4 (`haloscan_keywords`, `dataforseo_ranked`, `dataforseo_related`)
+- Classification : limite à 300 keywords (6 batches max)
+- Phase B SERP : appels séquentiels (pas en parallèle) pour éviter les rate limits
+- ⚠️ Règle dure gap ≤ 20 : indispensable — OpenAI peut classer `gap: true` des keywords où l'OT est bien positionné
+- ⚠️ Filtre related obligatoire : sans lui, des keywords ultra-génériques (1-2 mots sans destination) polluent le corpus
+- ⚠️ `Promise.allSettled` (pas `Promise.all`) : une panne Haloscan ne doit pas bloquer DataForSEO related ni ranked
+- ⚠️ `taux_captation` : dénominateur = `volume_marche_seeds` (pas `volume_transactionnel_gap`) — plafonné à 100%
+- ⚠️ `trafic_estime_capte` : utiliser la valeur CTR déjà calculée par `dataforseo-ranked` (ne pas la recalculer dans synthese)
+- ⚠️ `top_5_opportunites` : construire `vrais_gaps` (croisement Phase A ↔ SERP live) AVANT d'envoyer à OpenAI — sans ça, OpenAI invente des opportunités sur des keywords où l'OT est déjà bien positionné
+- ⚠️ Timeout OpenAI classification : 90s (60s trop court pour les gros batches de 50 keywords)
+
+#### Bloc 5 — Stocks physiques ✅ TERMINÉ (2026-02-25)
+
+**Architecture** :
+```
+microservice/routes/stocks.ts                → GET /stocks?code_insee=XXX (classification DATA Tourisme)
+microservice/routes/scan-types.ts            → GET /scan-types?code_insee=XXX (scan types, usage développement)
+
+app/api/blocs/stocks-physiques/
+├── datatourisme/route.ts  → proxy microservice /stocks
+├── sirene/route.ts        → recherche-entreprises.api.gouv.fr (sans auth)
+└── synthese/route.ts      → GPT-4o-mini
+
+lib/blocs/stocks-physiques.ts  → orchestrateur (Promise.allSettled + déduplication Levenshtein)
+types/stocks-physiques.ts       → tous les types TypeScript du bloc
+```
+
+**Migration SIRENE — piège critique** :
+- ❌ `https://api.insee.fr/token` → retourne `"url deprecated, visit portail-api.insee.fr"`
+- ❌ `portail-api.insee.fr` → SPA Gravitee APIM — retourne du HTML pour toutes les URLs
+- ❌ Gateway `api.insee.fr/api-sirene/3.11` avec API_KEY plan → les SIRENE_CLIENT_ID/SECRET sont pour l'ancien portail OAuth2, non valides avec le nouveau plan API_KEY
+- ✅ **Remplacement** → `recherche-entreprises.api.gouv.fr` — gratuit, sans auth, même données, filtre `code_commune` au niveau des établissements
+- ⚠️ `SIRENE_CLIENT_ID`/`SIRENE_CLIENT_SECRET` dans `.env.local` sont désormais **inutilisés** (old deprecated credentials)
+
+**recherche-entreprises.api.gouv.fr — comportement clé** :
+```
+GET https://recherche-entreprises.api.gouv.fr/search?code_commune=74010&activite_principale=55.10Z&etat_administratif=A&per_page=25&limite_matching_etablissements=25
+→ results[].matching_etablissements = UNIQUEMENT les établissements dans la commune cible
+→ Filtrer : etab.commune === code_insee && etab.etat_administratif === 'A'
+→ Déduplication par SIRET (codes NAF se chevauchent ex: 79.90Z dans activites ET services)
+```
+⚠️ **Rate limit 429** : ajouter `sleep(300ms)` entre chaque code NAF + retry backoff (1.5s × tentative, max 3)
+⚠️ **Format NAF avec point** : `55.10Z` (avec point) — obligatoire pour cette API
+
+**Codes NAF par catégorie** :
+```
+hébergements : ['55.10Z', '55.20Z', '55.30Z', '55.90Z']
+activités    : ['93.11Z', '93.12Z', '93.13Z', '93.19Z', '93.21Z', '93.29Z', '79.90Z']
+culture      : ['90.01Z', '90.02Z', '90.03A', '91.01Z', '91.02Z', '91.03Z', '91.04Z']
+services     : ['79.11Z', '79.12Z', '79.90Z']
+```
+
+**Microservice /stocks — classification** :
+- 1 fichier JSON = 1 établissement = 1 catégorie (priorité hébergements → activités → culture → services)
+- Restauration (`FoodEstablishment`, etc.) **ignorée** — hors scope
+- Retourne counts par catégorie + sous-catégories + `etablissements_bruts[]` pour déduplication
+
+**Déduplication DATA Tourisme ↔ Recherche Entreprises** :
+- Score de similarité : nom exact (+3), inclusion (+2), Levenshtein ≤ 3 (+1), code postal identique (+1), adresse partielle (+1)
+- Doublon confirmé si score ≥ 3
+- `taux_couverture_dt` = % des établissements SIRENE présents dans DATA Tourisme
+
+**Tests validés — Annecy (INSEE 74010)** :
+
+| Source | Hébergements | Activités | Culture | Services | Total |
+|---|---|---|---|---|---|
+| DATA Tourisme | 42 (37 hôtels) | 153 | 55 | 14 | 264 |
+| Recherche Entreprises | 438 | 811 | 699 | 69 | 2 017 |
+| **Fusionné** | **470** | **919** | **743** | **78** | **2 271** |
+
+Durée : ~16s | Taux couverture DT : ~0% (beaucoup d'établissements SIRENE non référencés DT) | OpenAI synthèse ✅
+
+**Coût du bloc** :
+```
+DATA Tourisme (local)          : gratuit
+Recherche Entreprises (open)   : gratuit
+OpenAI gpt-4o-mini (1 appel)   : 0.001€
+TOTAL                          : 0.001€
+```
+
+---
+
+#### Préparation Bloc 5 — Scan types DATA Tourisme ✅ TERMINÉ (2026-02-24)
+
+**Objectif** : cartographier tous les types `@type` présents dans les fichiers DATA Tourisme pour une commune avant de coder le Bloc 5 (stocks physiques).
+
+**Fichiers créés** :
+```
+microservice/routes/scan-types.ts          → GET /scan-types?code_insee=XXX
+microservice/services/datatourisme.ts      → export getFilepathsParCommune() ajouté
+scripts/scan-datatourisme-types.js         → script standalone (node scripts/scan-datatourisme-types.js 74010)
+```
+
+**Endpoint microservice** :
+```
+GET http://localhost:3001/scan-types?code_insee=74010
+Retourne : { code_insee, total_fichiers, types_distincts, types: [{ type, count }] }
+Tri : fréquence décroissante
+Filtre : aucun — tous les types @type bruts
+```
+
+**Résultats scan Annecy (INSEE 74010) — validés** :
+- 323 fichiers, 114 types distincts
+- Notes : `PointOfInterest` (323) et `PlaceOfInterest` (314) = types racines omniprésents, à ignorer pour les regroupements
+- `olo:OrderedList` (13) = artefact technique, à ignorer
+- Les types `schema:XXX` sont des doublons des types sans préfixe — compter l'un ou l'autre uniquement
+
+**Regroupements définis pour le Bloc 5** (à affiner lors du codage) :
+
+| Catégorie | Types DATA Tourisme | Count Annecy |
+|---|---|---|
+| HÉBERGEMENTS | `Accommodation`, `schema:Accommodation`, `schema:LodgingBusiness`, `Hotel`, `schema:Hotel`, `HotelTrade`, `CollectiveAccommodation`, `HolidayResort`, `RentalAccommodation`, `SelfCateringAccommodation` | ~42 |
+| ACTIVITÉS & LOISIRS | `SportsAndLeisurePlace`, `ActivityProvider`, `Tour`, `WalkingTour`, `EducationalTrail`, `CyclingTour`, `FitnessCenter`, `TennisComplex`, `ClimbingWall`, `NauticalCentre`, `SwimmingPool`, `EquestrianCenter`, `BoulesPitch`, `LeisureComplex` | ~127+ |
+| CULTURE & PATRIMOINE | `CulturalSite`, `ReligiousSite`, `Church`, `Cathedral`, `Convent`, `Monastery`, `CityHeritage`, `TechnicalHeritage`, `RemarkableBuilding`, `NaturalHeritage`, `Museum`, `ArtGalleryOrExhibitionGallery`, `Castle`, `Palace`, `Bridge`, `Theater`, `Cinema`, `InterpretationCentre` | ~68+ |
+| ÉVÈNEMENTS | `EntertainmentAndEvent`, `CulturalEvent`, `SportsEvent`, `SaleEvent`, `Market`, `Festival`, `Carnival`, `SocialEvent`, `ScreeningEvent` | ~9+ |
+| NAUTIQUE & OUTDOOR | `Beach`, `Marina`, `RiverPort`, `SightseeingBoat`, `Canal`, `ParkAndGarden`, `PicnicArea`, `PlayArea` | ~3+ |
+| SERVICES TOURISTIQUES | `TouristInformationCenter`, `LocalTouristOffice`, `IncomingTravelAgency`, `TourOperatorOrTravelAgency`, `Transport`, `ConvenientService` | ~5+ |
+
+**À exclure** (déjà dans TYPES_EXCLUS de `/poi` ou hors scope) :
+- `FoodEstablishment`, `Restaurant`, `HotelRestaurant`, `BistroOrWineBar`, `BarOrPub`, `Store`, `CraftsmanShop`, `schema:LocalBusiness`, `BusinessPlace`, `NonHousingRealEstateRental`, `EquipmentRental`, `EquipmentRentalShop`, `Rental`, `Product`, `ConventionCentre`, `IndustrialSite`, `NightClub`, `Casino`, `Airport`
+
+**Blocs suivants à implémenter** :
+- **Bloc 5** : Microservice `/stocks` endpoint — counts par catégorie (hébergements / activités / culture / évènements)
+- Social media (Instagram — hashtag stats + posts récents) — déjà dans Bloc 1, à orchestrer
 - Monitorank (contexte algo Google)
-- Microservice DATA Tourisme (stocks hébergements / activités — Bloc /stocks endpoint)
 - Analyse concurrents (DataForSEO + Haloscan)
 - Synthèse contenus OpenAI (copier-coller GDoc/GSlides)
 
@@ -814,3 +1083,6 @@ DATA_TOURISME_API_URL=http://localhost:3001
 | `test-trevoux.js` | Bloc 1 — test intégration Trévoux (vraies APIs, microservice requis) |
 | `test-bloc2.js` | Bloc 2 — test Vanves + Annecy (taxe de séjour, microservice requis) |
 | `test-bloc3.js` | Bloc 3 — test Annecy (SERP 5 requêtes, classification, Haloscan+fallback DataForSEO, PageSpeed, Analyse OT, OpenAI) |
+| `test-bloc4.js` | Bloc 4 Phase A+B — test Annecy (Haloscan 8 seeds, DataForSEO related 4 seeds, ranked, classification 300 kw, SERP live 8, synthèse — flag `--phase-b`) |
+| `test-bloc5.js` | Bloc 5 — test Annecy (DATA Tourisme /stocks, Recherche Entreprises, déduplication, OpenAI) |
+| `scripts/scan-datatourisme-types.js` | Préparation Bloc 5 — scan tous types @type DATA Tourisme sans filtre (node scripts/scan-datatourisme-types.js [code_insee]) |
