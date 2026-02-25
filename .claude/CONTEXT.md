@@ -364,22 +364,18 @@ Affiché dans l'interface :
 
 ### Table `audits`
 - `id` UUID (PK)
-- `destination_id` UUID (FK → destinations)
-- `statut` ENUM (en_cours / terminé / erreur)
-- `resultats` JSONB (un objet par bloc : positionnement, seo, social, technique, stocks, concurrents, contenus)
-- `couts_api` JSONB (par API : nb_appels, cout_unitaire, cout_total)
+- `destination_id` UUID (FK → destinations) — **UNIQUE** : un seul audit par destination, données écrasées au relancement
+- `statut` ENUM (en_cours / termine / erreur)
+- `resultats` JSONB (7 blocs : positionnement, volume_affaires, schema_digital, visibilite_seo, stocks_physiques, stock_en_ligne, concurrents)
+- `couts_api` JSONB (agrégat par bloc et par API)
 - `created_at` TIMESTAMP
 
-### Table `competitors`
-- `id` UUID (PK)
-- `audit_id` UUID (FK → audits)
-- `nom` TEXT
-- `type` ENUM (direct / indirect)
-- `metriques` JSONB
+> ⚠️ **Pas de table `competitors`** — les concurrents sont stockés uniquement dans `resultats.concurrents` (JSONB). Table supprimée via migration 005.
 
-### Table `users`
-- Gérée par Supabase Auth
+### Table `users` (profiles)
+- Gérée par Supabase Auth + table `public.profiles`
 - Champ additionnel : `role` ENUM (admin / collaborateur)
+- Profil créé automatiquement par trigger à la création d'un utilisateur Auth
 
 ---
 
@@ -412,7 +408,9 @@ supabase/
 ├── migrations/
 │   ├── 001_initial_schema.sql        → Tables + ENUMs + triggers (profiles, destinations, audits, competitors)
 │   ├── 002_indexes.sql               → GIN (resultats, couts_api) + btree expressions (score_gap, PageSpeed, etc.)
-│   └── 003_rls.sql                   → Row Level Security — authenticated full read/write
+│   ├── 003_rls.sql                   → Row Level Security — authenticated full read/write
+│   ├── 004_audit_unique_constraint.sql → UNIQUE(destination_id) sur audits — 1 seul audit par destination
+│   └── 005_drop_competitors_table.sql  → Suppression table competitors + ENUM type_concurrent
 └── seed.sql                          → Données Annecy complètes (7 blocs, résultats réels + estimés)
 ```
 

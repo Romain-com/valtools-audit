@@ -6,6 +6,14 @@
 
 ---
 
+## Notes d'architecture importantes
+
+> **Contrainte UNIQUE sur `audits.destination_id`** — un seul audit actif par destination. Les données sont écrasées lors d'un relancement (pas d'historique temporel des audits successifs).
+
+> **Les concurrents sont stockés uniquement dans `audits.resultats.concurrents` (JSONB)** — il n'existe pas de table `competitors` dédiée. La table a été supprimée (migration 005) car les concurrents font partie intégrante du résultat d'audit et n'ont pas besoin d'être interrogés indépendamment.
+
+---
+
 ## Structure globale
 
 ```json
