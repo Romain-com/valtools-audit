@@ -193,7 +193,7 @@ Retourne UNIQUEMENT ce JSON valide (sans markdown, sans commentaires) :
     console.error('[synthese] Erreur OpenAI :', (err as Error).message)
 
     // Fallback sans OpenAI — calculer les opportunités directement depuis vrais_gaps
-    const top_5_opportunites: Opportunite[] = vrais_gaps
+    const top_5_opportunites = vrais_gaps
       .slice(0, 5)
       .map((g) => ({
         keyword: g.keyword,

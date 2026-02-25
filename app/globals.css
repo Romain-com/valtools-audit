@@ -1,0 +1,97 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ── Base ─────────────────────────────────────────────────────────── */
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-brand-bg text-brand-navy;
+    min-height: 100vh;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-bold text-brand-navy;
+  }
+
+  /* Scrollbar discrète */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-brand-bg;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-brand-border rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: #6B7280;
+  }
+}
+
+/* ── Composants utilitaires ───────────────────────────────────────── */
+@layer components {
+  /* Bouton primaire orange */
+  .btn-primary {
+    @apply inline-flex items-center gap-2 px-5 py-2.5 bg-brand-orange text-white font-semibold rounded
+           hover:bg-orange-600 active:bg-orange-700 transition-colors duration-150 cursor-pointer
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  /* Bouton secondaire outline */
+  .btn-secondary {
+    @apply inline-flex items-center gap-2 px-5 py-2.5 bg-white text-brand-navy font-semibold rounded
+           border border-brand-border hover:border-brand-orange hover:text-brand-orange
+           transition-colors duration-150 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  /* Bouton ghost */
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 px-4 py-2 font-medium rounded
+           hover:bg-brand-bg hover:text-brand-navy transition-colors duration-150 cursor-pointer;
+    color: #6B7280;
+  }
+
+  /* Card de base */
+  .card {
+    @apply bg-brand-surface rounded-lg shadow-sm border border-brand-border;
+  }
+
+  /* Input de base */
+  .input-base {
+    @apply w-full px-4 py-2.5 bg-white border border-brand-border rounded text-brand-navy
+           focus:outline-none focus:ring-2 focus:ring-brand-orange/30
+           focus:border-brand-orange transition-colors duration-150;
+  }
+  .input-base::placeholder {
+    color: #9CA3AF;
+  }
+}
+
+/* ── Animations jauge ─────────────────────────────────────────────── */
+@layer utilities {
+  .text-text-secondary {
+    color: #6B7280;
+  }
+
+  .text-text-muted {
+    color: #9CA3AF;
+  }
+
+  /* Transition smooth pour la jauge de progression */
+  .gauge-bar {
+    transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+}

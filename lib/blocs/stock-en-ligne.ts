@@ -191,7 +191,7 @@ export async function lancerBlocStockEnLigne(
       indicateurs,
     })
     const { cout: _cout, ...syntheseSeule } = syntheseData as { cout: { cout_total: number }; [k: string]: unknown }
-    synthese = syntheseSeule
+    synthese = syntheseSeule as unknown as typeof synthese
     cout_openai = 0.001
   } catch (err: unknown) {
     erreurs_partielles.push(`synthese_openai: ${err instanceof Error ? err.message : 'erreur inconnue'}`)

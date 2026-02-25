@@ -1374,17 +1374,153 @@ TOTAL cas typique (Annecy)                  : 0.143€
 
 ---
 
-### Phase 3 — Orchestration et UX
-- Page lancement + autocomplete + gestion doublon
-- Progression temps réel (Supabase Realtime)
-- Stockage structuré des résultats
-- Module tracking des coûts API
+### Phase 3A — Fondations UX ✅ TERMINÉE (2026-02-25)
 
-### Phase 4 — Page de résultats
-- Affichage par bloc structuré
-- Contenus OpenAI prêts à copier-coller
-- Vue comparaison destination vs concurrents
-- Dashboard historique
+**Objectif** : mettre en place toute l'interface utilisateur de l'app — design tokens, auth, navigation et les 4 pages principales.
+
+#### Packages installés
+```bash
+npm install tailwindcss@3 postcss autoprefixer @supabase/ssr
+```
+
+#### Design tokens (`ressources/design-tokens.md`)
+Extraits de la charte graphique Valraiso 2026. Référence pour toute l'UI — aucune valeur hardcodée dans les composants.
+
+| Token Tailwind | Hex | Rôle |
+|---|---|---|
+| `brand-orange` | `#E84520` | Orange ADN — CTA, logo, accents |
+| `brand-orange-light` | `#F4A582` | Peach — badges secondaires |
+| `brand-purple` | `#6B72C4` | Bleu-violet — data, technologie |
+| `brand-yellow` | `#F5B731` | Jaune — KPIs positifs |
+| `brand-cream` | `#FAF0DC` | Crème — fonds doux |
+| `brand-navy` | `#1A2137` | Bleu nuit — textes, titres |
+| `brand-bg` | `#F3F5FA` | Background général app |
+| `status-success/warning/error/info` | vert/amber/rouge/bleu | Statuts audit |
+
+**Seuils KPI jauges :**
+- Note Google : vert ≥ 4.2 / orange ≥ 3.8 / rouge < 3.8
+- Score gap : vert ≥ 7/10 / orange ≥ 4 / rouge < 4
+- Score visibilité OT : vert ≥ 3/5 / orange 2 / rouge ≤ 1
+- PageSpeed mobile : vert ≥ 70 / orange ≥ 50 / rouge < 50
+
+#### Fichiers créés
+
+```
+tailwind.config.ts               ← Tokens couleurs, animations, ombres
+postcss.config.js                ← Tailwind v3 + autoprefixer
+app/globals.css                  ← Base + .btn-primary/.btn-secondary/.card/.input-base/.gauge-bar
+
+lib/supabase/client.ts           ← createBrowserClient (Realtime + auth côté client)
+lib/supabase/server.ts           ← createServerClient + createServiceClient (bypass RLS)
+lib/supabase/middleware.ts       ← updateSession() pour le middleware
+
+middleware.ts                    ← Routes protégées, / → /dashboard, redirect login si non-auth
+
+components/layout/Navbar.tsx     ← Logo SVG Valraiso + email utilisateur + déconnexion (client)
+components/ui/StatusBadge.tsx    ← Badge coloré avec spinner pour 'en_cours'
+components/ui/KpiCard.tsx        ← Gros chiffre + jauge vert/orange/rouge selon seuils
+components/ui/ExpandableSection.tsx  ← Section dépliable, chevron animé
+components/ui/CopyButton.tsx     ← Copie presse-papier + feedback "Copié !" 2s
+components/ui/Modal.tsx          ← Modale bloquante, overlay, Échap optionnel
+components/ui/Spinner.tsx        ← SVG animé sm/md/lg
+
+app/layout.tsx                   ← RootLayout : globals.css + Navbar avec session serveur
+app/login/page.tsx               ← Auth email/password, redirect post-login
+
+app/dashboard/page.tsx           ← Server Component — grille cards destinations+audits
+app/audit/nouveau/page.tsx       ← Autocomplete commune + doublon + lancement
+app/audit/[id]/progression/page.tsx  ← Montagne SVG + skieur + Supabase Realtime
+app/audit/[id]/resultats/page.tsx    ← Server Component — charge audit + normalise
+app/audit/[id]/resultats/ResultatsClient.tsx  ← Sidebar scroll spy + 7 blocs + coûts
+
+app/api/destinations/check/route.ts  ← GET ?insee= → vérifie doublon en base
+app/api/audits/lancer/route.ts       ← POST → UPSERT destination + INSERT/UPDATE audit
+```
+
+#### Ce qu'on voit sur chaque écran
+
+**`/login`** : formulaire email/password centré avec fond dégradé, logo Valraiso, gestion d'erreur inline. Redirect vers `/dashboard`.
+
+**`/dashboard`** : grille responsive de cards destinations. Chaque card = nom + département + date + badge statut + coût total + 3 KPIs avec jauges (note Google, keywords SEO, score gap). État vide = illustration montagne + bouton "Premier audit". Bouton "Nouvel audit" en haut à droite.
+
+**`/audit/nouveau`** : champ recherche autocomplete (debounce 300ms, min 2 chars) → microservice `/communes` avec fallback `geo.api.gouv.fr`. Dropdown suggestions (nom + CP + département + population). Sélection → vérification doublon via `/api/destinations/check`. Doublon → modale avec date du dernier audit + choix relancer/annuler. Panel confirmation avec tous les champs. Bouton "Lancer l'audit" → `/api/audits/lancer` → redirect progression.
+
+**`/audit/[id]/progression`** : animation montagne SVG avec 7 étapes marquées, skieur SVG pur qui monte de la base vers le sommet. Skieur pulse (animation CSS) si bloc `en_attente_validation`. Liste des 7 blocs avec statut temps réel via Supabase Realtime (postgres_changes sur `audits` filtré par `id`). Alerte orange + bouton "Valider" si validation requise. Modale placeholder Phase 3B pour blocs 4 et 7. Coût cumulé en bas. Bouton "Voir les résultats" quand tout est terminé.
+
+**`/audit/[id]/resultats`** : sidebar fixe gauche (w-64) avec liste des 7 blocs, scroll spy (IntersectionObserver), point vert si données présentes, coût par bloc. Onglet "Coûts API" en bas = tableau détaillé par API. Contenu principal = 7 sections avec KpiCards + ExpandableSections + texte OpenAI + CopyButton. Chaque bloc gère le cas "données absentes" avec un placeholder dashed.
+
+#### Patterns techniques à retenir
+
+**Normalisation FK Supabase** : `.select()` avec relation retourne un tableau même avec `.single()` :
+```typescript
+destinations: Array.isArray(audit.destinations)
+  ? audit.destinations[0]
+  : audit.destinations
+```
+
+**Calcul coût couts_api JSONB** : incohérence entre `total` et `total_bloc` selon les blocs :
+```typescript
+const t = bloc.total ?? bloc.total_bloc ?? 0
+```
+
+**Extraction statuts blocs depuis resultats JSONB** :
+```typescript
+if (data.statut === 'en_attente_validation') → 'en_attente_validation'
+else if (data.erreur) → 'erreur'
+else (clé présente) → 'termine'
+// clé absente → 'en_attente'
+```
+
+**Supabase Realtime** : uniquement côté client (page progression). Les Server Components ne supportent pas le Realtime.
+
+#### Bugs préexistants corrigés au passage
+| Fichier | Correction |
+|---|---|
+| `app/api/blocs/visibilite-seo/serp-transac/route.ts` | `export function` → `function` (export non-valide dans Route Handler) |
+| `app/api/blocs/visibilite-seo/synthese/route.ts` | Suppression annotation de type trop stricte sur `top_5_opportunites` |
+| `lib/blocs/stock-en-ligne.ts` | Cast `as unknown as typeof synthese` pour `SyntheseBloc6` |
+| `microservice/routes/bbox.ts` | Conditionnel undefined sur `data.contour?.coordinates?.[0]` |
+
+#### État en fin de Phase 3A
+- ✅ `npx next build` passe sans erreur
+- ✅ Tailwind configuré avec tous les tokens Valraiso
+- ✅ Auth Supabase fonctionnelle (login, middleware, session SSR + client)
+- ✅ 4 pages UI complètes (dashboard, nouveau, progression, résultats)
+- ✅ 6 composants UI réutilisables
+- ✅ Seed Annecy permet de visualiser tous les blocs sans lancer de vrai audit
+- ⏳ Phase 3B : logique de validation réelle des blocs 4 (keywords Phase B) et 7 (concurrents) — placeholders en place
+
+---
+
+### Tests navigateur validés (2026-02-25)
+
+Serveur dev lancé sur **localhost:3002** (port 3000 occupé par autre processus).
+Compte admin créé via `supabase.auth.admin.createUser` : `admin@valraiso.fr` / `Valraiso2026!`.
+
+| Test | URL | Résultat |
+|------|-----|----------|
+| Login | `/login` | ✅ Auth Supabase OK — redirect `/dashboard` |
+| Dashboard | `/dashboard` | ✅ Card Annecy visible avec statut + KPIs |
+| Autocomplete | `/audit/nouveau` | ✅ Suggestions via geo.api.gouv.fr |
+| Progression | `/audit/20000000-0000-0000-0000-000000000001/progression` | ✅ Montagne SVG + étapes vertes |
+| Résultats | `/audit/20000000-0000-0000-0000-000000000001/resultats` | ✅ 7 blocs + sidebar scroll spy |
+
+**Correctif appliqué pendant les tests** : `app/audit/nouveau/page.tsx`
+- Le champ "Région" affichait le code numérique (`84`) au lieu du nom.
+- Ajout d'une `REGIONS_FR: Record<string, string>` (18 régions) + champ optionnel `nomRegion` dans l'interface `Commune`.
+- Ajout de `nomRegion` dans les fields des appels `geo.api.gouv.fr`.
+- Affichage : `selected.nomRegion || REGIONS_FR[selected.codeRegion] || selected.codeRegion`.
+
+---
+
+### Phase 3B — À faire
+- Logique de validation bloc 4 : affichage keywords classifiés + sélection manuelle avant SERP live
+- Logique de validation bloc 7 : affichage concurrents IA + correction manuelle avant analyse SEO
+- Orchestrateur général : lancement séquentiel des 7 blocs depuis `/api/audits/lancer`
+- Mise à jour Supabase Realtime depuis chaque bloc (écriture `resultats` + `couts_api` au fil de l'eau)
+
+### Phase 4 — Page de résultats (intégrée Phase 3A)
+✅ Structure complète affichée — données réelles via seed Annecy.
 
 ### Phase 5 — Finitions
 - Gestion des erreurs et retry par module

@@ -54,8 +54,8 @@ router.get('/', async (req: Request, res: Response) => {
     }
 
     // Calcul bbox depuis le contour polygonal
-    if (data.contour?.coordinates?.[0]?.length > 0) {
-      const coords = data.contour.coordinates[0]
+    if ((data.contour?.coordinates?.[0]?.length ?? 0) > 0) {
+      const coords = data.contour!.coordinates[0]
       const bbox = calculerBbox(coords)
       return res.json({ code_insee, bbox, source: 'contour' })
     }

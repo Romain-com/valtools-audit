@@ -60,7 +60,7 @@ function analyserSERP(
  * Stratégie : 50% transac + gap fort volume | 50% absence totale OT
  * L'utilisateur peut modifier via selectionne_phase_b, sinon on applique la sélection auto.
  */
-export function selectionnerKeywordsPhaseB(
+function selectionnerKeywordsPhaseB(
   keywords_classes: KeywordClassifie[],
   max: number = MAX_KEYWORDS
 ): KeywordClassifie[] {
