@@ -5,6 +5,7 @@
 import { createClient } from '@supabase/supabase-js'
 import type { BlocsStatuts, StatutBloc, ParamsAudit } from './blocs-statuts'
 import { BLOCS_RESULTATS_KEYS } from './blocs-statuts'
+import { logInfo } from './logger'
 
 // ─── Client Supabase service role ────────────────────────────────────────────
 
@@ -194,6 +195,17 @@ export async function lireParamsAudit(auditId: string): Promise<ParamsAudit> {
   const resultats = (data.resultats as Record<string, unknown>) ?? {}
   const schemaDigital = resultats.schema_digital as Record<string, unknown> | undefined
   const domaine_ot = (schemaDigital?.domaine_ot_detecte as string | null) ?? null
+
+  // ── Diagnostic — params audit chargés (critique pour Bloc 4) ──
+  logInfo(auditId, 'Params audit chargés', 'orchestrateur', {
+    nom: dest.nom,
+    code_insee: dest.code_insee,
+    siren: dest.siren,
+    domaine_ot: domaine_ot ?? null,
+    domaine_ot_source: domaine_ot
+      ? 'bloc3_detecte'
+      : 'null — Bloc 3 non terminé ou détection échouée',
+  })
 
   return {
     audit_id: auditId,

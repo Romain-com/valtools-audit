@@ -106,9 +106,18 @@ export async function POST(request: NextRequest) {
     domaine_ot?: string
   }
 
-  if (!keywords_classes?.length || !domaine_ot) {
+  // keywords_classes vide → résultats vides (pas d'erreur — domaine OT non indexé)
+  if (!keywords_classes || keywords_classes.length === 0) {
+    return NextResponse.json({
+      serp_results: [],
+      keywords_analyses: [],
+      cout: { nb_appels: 0, cout_unitaire: API_COSTS.dataforseo_serp, cout_total: 0 },
+    })
+  }
+
+  if (!domaine_ot) {
     return NextResponse.json(
-      { erreur: 'Paramètres keywords_classes et domaine_ot requis' },
+      { erreur: 'Paramètre domaine_ot requis' },
       { status: 400 }
     )
   }

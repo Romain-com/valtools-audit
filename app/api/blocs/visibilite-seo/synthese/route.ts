@@ -11,7 +11,6 @@ import { API_COSTS } from '@/lib/api-costs'
 import type {
   KeywordClassifie,
   KeywordMarche,
-  KeywordPositionneOT,
   ResultatSERPTransac,
   Opportunite,
   ResultatPhaseB,
@@ -42,9 +41,10 @@ export async function POST(request: NextRequest) {
     trafic_capte_ot_estime?: number
   }
 
-  if (!destination || !domaine_ot || !keywords_classes?.length || !serp_results?.length) {
+  // keywords_classes et serp_results vides tolérés (domaine OT non indexé)
+  if (!destination || !domaine_ot) {
     return NextResponse.json(
-      { erreur: 'Paramètres destination, domaine_ot, keywords_classes et serp_results requis' },
+      { erreur: 'Paramètres destination et domaine_ot requis' },
       { status: 400 }
     )
   }

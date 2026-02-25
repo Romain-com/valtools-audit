@@ -429,9 +429,40 @@ function ModalValidationKeywords({
 
   function handleConfirm() {
     const valides = keywords.filter(k => selection.has(k.keyword))
-    if (valides.length === 0) return
     setEnvoi(true)
     onConfirm(valides)
+  }
+
+  // Cas liste vide — aucun keyword détecté (domaine OT absent, Haloscan SITE_NOT_FOUND, etc.)
+  if (keywords.length === 0) {
+    return (
+      <Modal open={true} onClose={onClose} title="Validation — Keywords Phase B" blocking>
+        <div className="space-y-4">
+          <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+            <svg viewBox="0 0 20 20" className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" fill="currentColor">
+              <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+            </svg>
+            <div>
+              <p className="font-semibold text-amber-800 text-sm">Aucun keyword détecté</p>
+              <p className="text-amber-700 text-xs mt-1">
+                Le domaine de l&apos;OT n&apos;a pas été détecté ou n&apos;est pas indexé par Haloscan (SITE_NOT_FOUND).
+                La Phase B sera lancée sans keywords — le score gap sera calculé à partir des données disponibles.
+              </p>
+            </div>
+          </div>
+          <div className="flex gap-3 pt-2">
+            <button
+              onClick={() => { setEnvoi(true); onConfirm([]) }}
+              disabled={envoi}
+              className="btn-primary flex-1 justify-center disabled:opacity-50"
+            >
+              {envoi ? <Spinner size="sm" /> : 'Continuer sans keywords'}
+            </button>
+            <button onClick={onClose} className="btn-secondary">Annuler</button>
+          </div>
+        </div>
+      </Modal>
+    )
   }
 
   return (
@@ -492,7 +523,7 @@ function ModalValidationKeywords({
             disabled={envoi || selection.size === 0}
             className="btn-primary flex-1 justify-center disabled:opacity-50"
           >
-            {envoi ? <Spinner size="sm" /> : `Confirmer (${selection.size} keywords)`}
+            {envoi ? <Spinner size="sm" color="white" /> : `Confirmer (${selection.size} keywords)`}
           </button>
           <button onClick={onClose} className="btn-secondary">Annuler</button>
         </div>
@@ -1068,8 +1099,8 @@ export default function ProgressionPage() {
         statutAudit={audit?.statut ?? ''}
       />
 
-      {/* Modale validation Bloc 4 — Keywords Phase B */}
-      {validationBloc === 'visibilite_seo' && keywordsPhaseA.length > 0 && (
+      {/* Modale validation Bloc 4 — Keywords Phase B (s'ouvre même si liste vide) */}
+      {validationBloc === 'visibilite_seo' && (
         <ModalValidationKeywords
           keywords={keywordsPhaseA}
           onConfirm={handleConfirmKeywords}

@@ -7,6 +7,7 @@ import { lancerPhaseBConcurrents } from '@/lib/blocs/concurrents-phase-b'
 import type { ConcurrentIdentifie, ContexteAuditPourConcurrents, ResultatPhaseAConcurrents } from '@/types/concurrents'
 import type { ParamsAudit, ResultatBloc } from '../blocs-statuts'
 import { lireResultatsBloc } from '../supabase-updates'
+import { logInfo } from '../logger'
 import { createClient } from '@supabase/supabase-js'
 
 function getSupabase() {
@@ -49,6 +50,16 @@ export async function lancerBloc7PhaseA(params: ParamsAudit): Promise<ResultatBl
     0
   )
 
+  // ── Diagnostic — valeurs clés Bloc 7 Phase A ──
+  const phaseA = resultatPhaseA as Record<string, unknown>
+  const concurrents = phaseA.concurrents as unknown[] | undefined
+  logInfo(params.audit_id, 'Bloc 7 Phase A — résultats reçus', 'bloc7', {
+    nb_concurrents: concurrents?.length ?? 0,
+    domaine_ot_utilise: domaine_ot || 'VIDE',
+    position_globale: phaseA.position_globale ?? null,
+    cout_bloc: totalCouts,
+  })
+
   return {
     resultats: {
       phase_a: resultatPhaseA,
@@ -88,6 +99,16 @@ export async function lancerBloc7PhaseB(
   })
 
   const coutsBloc = (resultatPhaseB.couts?.total_bloc ?? 0) as number
+
+  // ── Diagnostic — valeurs clés Bloc 7 Phase B ──
+  const phaseB = resultatPhaseB as Record<string, unknown>
+  logInfo(params.audit_id, 'Bloc 7 Phase B — résultats reçus', 'bloc7', {
+    nb_concurrents_valides: params.concurrents_valides?.length ?? 0,
+    position_globale: phaseB.position_globale ?? null,
+    score_comparatif: phaseB.score_comparatif ?? null,
+    synthese_ok: !!phaseB.synthese_narrative,
+    cout_bloc: coutsBloc,
+  })
 
   return {
     resultats: resultatPhaseB as unknown as Record<string, unknown>,
@@ -197,7 +218,7 @@ async function construireContexte(params: ParamsAudit): Promise<ContexteAuditPou
  * Extrait les métriques de la destination depuis Bloc 3, 2, 5, 6.
  */
 async function extraireMetriquesDestination(auditId: string) {
-  const [bloc2, bloc3, bloc5, bloc6] = await Promise.all([
+  const [bloc2, bloc3, , bloc6] = await Promise.all([
     lireResultatsBloc(auditId, 'volume_affaires').catch(() => null),
     lireResultatsBloc(auditId, 'schema_digital').catch(() => null),
     lireResultatsBloc(auditId, 'stocks_physiques').catch(() => null),

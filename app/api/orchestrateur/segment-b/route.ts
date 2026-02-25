@@ -32,9 +32,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'audit_id requis' }, { status: 400 })
     }
 
-    if (!Array.isArray(keywords_valides) || keywords_valides.length === 0) {
-      return NextResponse.json({ error: 'keywords_valides requis (tableau non vide)' }, { status: 400 })
+    if (!Array.isArray(keywords_valides)) {
+      return NextResponse.json({ error: 'keywords_valides doit être un tableau' }, { status: 400 })
     }
+    // Note : liste vide tolérée — Phase B calcule le gap sans keywords SERP
 
     // ── Vérification : Bloc 4 doit être en_attente_validation ─────────────────
     const blocsStatuts = await lireBlocsStatuts(audit_id)

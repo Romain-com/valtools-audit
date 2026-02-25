@@ -5,6 +5,7 @@
 import { lancerBlocStockEnLigne } from '@/lib/blocs/stock-en-ligne'
 import type { ParamsAudit, ResultatBloc } from '../blocs-statuts'
 import { lireResultatsBloc } from '../supabase-updates'
+import { logInfo } from '../logger'
 
 /**
  * Lance le Bloc 6 et retourne les résultats au format standard de l'orchestrateur.
@@ -43,6 +44,19 @@ export async function lancerBloc6(params: ParamsAudit): Promise<ResultatBloc> {
     },
     stocks_bloc5
   )
+
+  // ── Diagnostic — valeurs clés du Bloc 6 ──
+  const r = resultat as Record<string, unknown>
+  const airbnb = r.airbnb as Record<string, unknown> | undefined
+  const booking = r.booking as Record<string, unknown> | undefined
+  const indicateurs = r.indicateurs as Record<string, unknown> | undefined
+  logInfo(params.audit_id, 'Bloc 6 — résultats reçus', 'bloc6', {
+    domaine_ot_utilise: domaine_ot || 'VIDE',
+    airbnb_total: airbnb?.total_annonces ?? null,
+    booking_total: booking?.total_annonces ?? null,
+    taux_dependance_ota: indicateurs?.taux_dependance_ota ?? null,
+    taux_reservable_direct: indicateurs?.taux_reservable_direct ?? null,
+  })
 
   return {
     resultats: resultat as unknown as Record<string, unknown>,

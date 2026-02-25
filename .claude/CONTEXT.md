@@ -1711,6 +1711,72 @@ Supabase Realtime `postgres_changes` ne fonctionnait pas de façon fiable en loc
 
 `app/audit/[id]/resultats/ResultatsClient.tsx` : lien "← Progression" ajouté dans la sidebar, sous "← Dashboard", pointant vers `/audit/[id]/progression`.
 
+### Correctifs Session 2 post-Phase 3B (2026-02-25)
+
+#### 1. Cause racine 0 keywords — `dataforseo-ranked` retournait 400
+
+**Problème** : si `domaine_ot` est absent (Bloc 3 n'a pas détecté le site OT), `dataforseo-ranked/route.ts` retournait HTTP 400. L'orchestrateur Phase A (`appelRoute`) levait alors une exception → `ranked_result = null` → la Phase A loggait `throw new Error('DataForSEO ranked_keywords indisponible')` → le `catch` retournait `keywords_classes: []`.
+
+**Cascade complète** :
+```
+domaine_ot null (Bloc 3 SITE_NOT_FOUND)
+  → dataforseo-ranked 400
+    → appelRoute throw
+      → ranked_result = null
+        → throw 'ranked_keywords indisponible'
+          → catch → keywords_classes: []
+            → modal bloquée (keywordsPhaseA.length > 0)
+              → Phase B jamais lancée
+```
+
+**Correction** (`app/api/blocs/visibilite-seo/dataforseo-ranked/route.ts`) :
+```typescript
+// Domaine OT absent → résultats vides, pas d'erreur bloquante
+if (!domaine_ot) {
+  return NextResponse.json({
+    keywords_positionnes_ot: [],
+    trafic_capte_estime: 0,
+    cout: { nb_appels: 0, cout_unitaire: API_COSTS.dataforseo_ranked, cout_total: 0 },
+  })
+}
+```
+
+#### 2. Cascade tolérée — pipeline Phase B avec keywords vides
+
+Trois routes retournaient 400 sur liste vide → corrigées pour retourner résultats vides :
+
+| Fichier | Ancien comportement | Nouveau comportement |
+|---------|--------------------|--------------------|
+| `app/api/blocs/visibilite-seo/serp-transac/route.ts` | 400 si `keywords_classes` vide | Retourne `{ serp_results: [], keywords_analyses: [], cout: {...} }` |
+| `app/api/blocs/visibilite-seo/synthese/route.ts` | 400 si `keywords_classes` absent | Accepte liste vide (seuls `destination` + `domaine_ot` obligatoires) |
+| `app/api/orchestrateur/segment-b/route.ts` | 400 si `keywords_valides.length === 0` | Tolère le tableau vide — Phase B calcule le gap sans keywords SERP |
+
+#### 3. Modal Bloc 4 — condition d'affichage corrigée
+
+**Problème** : la condition `{validationBloc === 'visibilite_seo' && keywordsPhaseA.length > 0 && (` bloquait l'affichage de la modale quand `keywords_classes` était vide.
+
+**Corrections** (`app/audit/[id]/progression/page.tsx`) :
+- Supprimé `&& keywordsPhaseA.length > 0` de la condition de rendu
+- Ajouté dans `ModalValidationKeywords` un état "zéro keyword" avec message d'alerte et bouton "Continuer sans keywords"
+- Supprimé le guard `if (valides.length === 0) return` dans `handleConfirm()`
+
+#### 4. Instrumentation diagnostique — tous les wrappers
+
+`logInfo` ajouté dans chaque wrapper et dans `lireParamsAudit` pour diagnostiquer les valeurs réelles en cours d'audit :
+
+| Fichier | Métriques loggées |
+|---------|------------------|
+| `lib/orchestrateur/wrappers/bloc1.ts` | note_ot, nb_avis_ot, posts_count_instagram, axe_principal, cout_bloc |
+| `lib/orchestrateur/wrappers/bloc2.ts` | montant_taxe_euros, type_collecteur, nuitees_estimees, source_donnee, cout_bloc |
+| `lib/orchestrateur/wrappers/bloc3.ts` | domaine_ot_detecte, score_visibilite_ot, nb_top3_officiels, haloscan_total_keywords, nb_serp_fusionne |
+| `lib/orchestrateur/wrappers/bloc4.ts` | **domaine_ot_utilise** (VIDE si absent), nb_keywords_classes, nb_gaps, volumes + **alerte ANOMALIE si 0 keywords** |
+| `lib/orchestrateur/wrappers/bloc5.ts` | total_hebergements, total_activites, total_stock_physique, source_donnee |
+| `lib/orchestrateur/wrappers/bloc6.ts` | airbnb_total, booking_total, taux_dependance_ota, taux_reservable_direct |
+| `lib/orchestrateur/wrappers/bloc7.ts` | Phase A : nb_concurrents, position_globale / Phase B : nb_concurrents_valides, score_comparatif, synthese_ok |
+| `lib/orchestrateur/supabase-updates.ts` | `lireParamsAudit` : nom, code_insee, domaine_ot, domaine_ot_source (bloc3_detecte ou null) |
+
+⚠️ `lireParamsAudit` est appelé deux fois dans Segment A — le **second appel** (après Bloc 3) est le critique : il doit afficher `domaine_ot_source: 'bloc3_detecte'` et une valeur non nulle.
+
 ### Phase 4 — Page de résultats (intégrée Phase 3A)
 ✅ Structure complète affichée — données réelles via seed Annecy.
 

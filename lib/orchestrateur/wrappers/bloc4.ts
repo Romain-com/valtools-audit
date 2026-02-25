@@ -6,6 +6,7 @@ import { lancerPhaseB } from '@/lib/blocs/visibilite-seo-phase-b'
 import type { KeywordClassifie, CoutsBloc4 } from '@/types/visibilite-seo'
 import type { ParamsAudit, ResultatBloc } from '../blocs-statuts'
 import { lireResultatsBloc } from '../supabase-updates'
+import { logInfo } from '../logger'
 import { createClient } from '@supabase/supabase-js'
 
 function getSupabase() {
@@ -27,6 +28,24 @@ export async function lancerBloc4PhaseA(params: ParamsAudit): Promise<ResultatBl
   // Lire les coûts stockés par la Phase A (fire & forget interne)
   // Pour le suivi orchestrateur, on estime un coût global basé sur les appels
   const coutEstime = calculerCoutEstimePhaseA(domaine_ot)
+
+  // ── Diagnostic — valeurs clés Bloc 4 Phase A ──
+  logInfo(params.audit_id, 'Bloc 4 Phase A — résultats reçus', 'bloc4', {
+    domaine_ot_utilise: domaine_ot || 'VIDE — domaine non détecté par Bloc 3',
+    nb_keywords_marche: resultatPhaseA.keywords_marche?.length ?? 0,
+    nb_keywords_positionnes_ot: resultatPhaseA.keywords_positionnes_ot?.length ?? 0,
+    nb_keywords_classes: resultatPhaseA.keywords_classes?.length ?? 0,
+    nb_gaps: resultatPhaseA.keywords_classes?.filter(k => k.gap)?.length ?? 0,
+    nb_gaps_transac: resultatPhaseA.keywords_classes?.filter(k => k.gap && k.intent_transactionnel)?.length ?? 0,
+    volume_marche_seeds: resultatPhaseA.volume_marche_seeds ?? 0,
+    volume_positionne_ot: resultatPhaseA.volume_positionne_ot ?? 0,
+    volume_transactionnel_gap: resultatPhaseA.volume_transactionnel_gap ?? 0,
+    trafic_capte_ot_estime: resultatPhaseA.trafic_capte_ot_estime ?? 0,
+    cout_estime: coutEstime,
+    alerte: (resultatPhaseA.keywords_classes?.length ?? 0) === 0
+      ? 'ANOMALIE — keywords_classes vide : domaine OT manquant ou Haloscan/DataForSEO sans résultats'
+      : undefined,
+  })
 
   return {
     resultats: {
@@ -72,6 +91,18 @@ export async function lancerBloc4PhaseB(
   )
 
   const coutTotal = couts_phase_a.total + (resultatPhaseB as { synthese_narrative?: string } ? 0.001 : 0)
+
+  // ── Diagnostic — valeurs clés Bloc 4 Phase B ──
+  const phaseB = resultatPhaseB as Record<string, unknown>
+  logInfo(params.audit_id, 'Bloc 4 Phase B — résultats reçus', 'bloc4', {
+    nb_keywords_valides_recus: params.keywords_valides?.length ?? 0,
+    nb_serp_results: (phaseB.serp_results as unknown[])?.length ?? 0,
+    score_gap: phaseB.score_gap ?? null,
+    taux_captation: phaseB.taux_captation ?? null,
+    nb_top5_opportunites: (phaseB.top_5_opportunites as unknown[])?.length ?? 0,
+    synthese_ok: !!phaseB.synthese_narrative,
+    cout_total: coutTotal,
+  })
 
   return {
     resultats: {

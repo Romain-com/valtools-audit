@@ -36,8 +36,13 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}))
   const { domaine_ot } = body as { domaine_ot?: string }
 
+  // Domaine OT absent (Bloc 3 n'a pas détecté le site) — résultats vides, pas d'erreur bloquante
   if (!domaine_ot) {
-    return NextResponse.json({ erreur: 'Paramètre domaine_ot manquant' }, { status: 400 })
+    return NextResponse.json({
+      keywords_positionnes_ot: [],
+      trafic_capte_estime: 0,
+      cout: { nb_appels: 0, cout_unitaire: API_COSTS.dataforseo_ranked, cout_total: 0 },
+    })
   }
 
   const login = process.env.DATAFORSEO_LOGIN
