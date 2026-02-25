@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
 import Modal from '@/components/ui/Modal'
 import Spinner from '@/components/ui/Spinner'
+import CoutTooltip from '@/components/ui/CoutTooltip'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -39,143 +40,162 @@ const BLOCS_CONFIG: Omit<BlocStatut, 'statut' | 'cout'>[] = [
   { id: 'concurrents',      label: 'Concurrents',                   icone: '🏔️' },
 ]
 
-// ─── SVG Montagne avec étapes et skieur ─────────────────────────────────────
+// ─── SVG Montagne panoramique — 7 pics, un par bloc ─────────────────────────
+
+// Sommets des 7 pics dans un viewBox 900×250
+// Y décalé vers le bas pour laisser de l'espace au skieur au-dessus des sommets
+const PICS_SVG: [number, number][] = [
+  [100, 162],   // Bloc 1
+  [238, 138],   // Bloc 2
+  [372, 108],   // Bloc 3 — le plus haut
+  [505, 122],   // Bloc 4
+  [630, 112],   // Bloc 5
+  [748, 130],   // Bloc 6
+  [862,  98],   // Bloc 7 — sommet final
+]
+
+// Profil complet crête (pics + vallées intercalées)
+const CRETE_SVG: [number, number][] = [
+  [0,   228],
+  [48,  210],
+  [100, 162],   // Pic 1
+  [162, 208],
+  [238, 138],   // Pic 2
+  [308, 198],
+  [372, 108],   // Pic 3
+  [440, 192],
+  [505, 122],   // Pic 4
+  [570, 194],
+  [630, 112],   // Pic 5
+  [692, 196],
+  [748, 130],   // Pic 6
+  [808, 200],
+  [862,  98],   // Pic 7
+  [900, 218],
+]
 
 function MontagneSVG({ blocs, progression }: { blocs: BlocStatut[]; progression: number }) {
-  // Points de chemin du sommet au bas (7 étapes réparties)
-  const points = [
-    { x: 200, y: 30 },  // Sommet
-    { x: 175, y: 70 },
-    { x: 155, y: 105 },
-    { x: 140, y: 140 },
-    { x: 130, y: 175 },
-    { x: 120, y: 205 },
-    { x: 108, y: 235 },
-    { x:  90, y: 260 },  // Base
-  ]
-
-  // Position du skieur (index 0 = base, 7 = sommet)
   const skierIndex = Math.min(progression, 7)
-  // On inverse : skieur part du bas (index 7) vers le sommet (index 0)
-  const skierPointIdx = 7 - skierIndex
-  const skierPos = points[skierPointIdx] || points[7]
 
-  // Statut de la dernière étape pour détecter "en attente validation"
-  const lastBloc = blocs.find(b => b.statut === 'en_attente_validation')
-  const skierPulse = !!lastBloc
+  // Skieur au départ (bord gauche) ou au sommet du dernier bloc terminé
+  const skierX = skierIndex === 0 ? 18 : PICS_SVG[skierIndex - 1][0]
+  const skierY = skierIndex === 0 ? CRETE_SVG[0][1] : PICS_SVG[skierIndex - 1][1]
+
+  // Polygon de remplissage : crête → bas droite → bas gauche
+  const fillPoints = [
+    ...CRETE_SVG,
+    [900, 250] as [number, number],
+    [0,   250] as [number, number],
+  ].map(([x, y]) => `${x},${y}`).join(' ')
+
+  const cretePoints = CRETE_SVG.map(([x, y]) => `${x},${y}`).join(' ')
+
+  // Plan arrière flou (montagne secondaire)
+  const arrierePlan = [
+    '0,250',
+    '0,222', '70,178', '175,218', '290,160', '405,212',
+    '510,162', '618,215', '712,168', '820,218', '900,178',
+    '900,250',
+  ].join(' ')
+
+  const enAttenteValidation = blocs.some(b => b.statut === 'en_attente_validation')
 
   return (
-    <svg viewBox="0 0 400 280" className="w-full max-w-sm mx-auto" fill="none">
-      {/* Ciel gradient */}
+    <svg viewBox="0 0 900 250" className="w-full" xmlns="http://www.w3.org/2000/svg">
       <defs>
-        <linearGradient id="skyGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#F3F5FA" />
-          <stop offset="100%" stopColor="#E8EEFF" />
+        <linearGradient id="mgPrincipal" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#7AAAC8" />
+          <stop offset="100%" stopColor="#4E7E9E" />
         </linearGradient>
-        <linearGradient id="snowGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#FFFFFF" />
-          <stop offset="60%" stopColor="#F3F5FA" />
+        <linearGradient id="mgArriere" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#B8D3E6" stopOpacity="0.6" />
+          <stop offset="100%" stopColor="#8AB2CC" stopOpacity="0.6" />
         </linearGradient>
-        <linearGradient id="rockGrad" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#6B72C4" stopOpacity="0.4" />
-          <stop offset="100%" stopColor="#1A2137" stopOpacity="0.6" />
-        </linearGradient>
+        <filter id="ombre">
+          <feDropShadow dx="0" dy="1" stdDeviation="2" floodColor="#000" floodOpacity="0.12" />
+        </filter>
       </defs>
 
-      {/* Fond */}
-      <rect width="400" height="280" fill="url(#skyGrad)" rx="12" />
+      {/* Fond ciel */}
+      <rect width="900" height="250" fill="#EEF3F9" />
 
-      {/* Montagne principale */}
-      <polygon
-        points="200,25 340,260 60,260"
-        fill="url(#rockGrad)"
-      />
-      {/* Neige sommet */}
-      <polygon
-        points="200,25 220,75 180,75"
-        fill="url(#snowGrad)"
-        opacity="0.9"
-      />
+      {/* Plan arrière — chaîne secondaire */}
+      <polygon points={arrierePlan} fill="url(#mgArriere)" />
 
-      {/* Montagne arrière-plan gauche */}
-      <polygon
-        points="80,90 160,260 0,260"
-        fill="#1A2137"
-        opacity="0.2"
-      />
-      {/* Montagne arrière-plan droite */}
-      <polygon
-        points="320,100 400,260 240,260"
-        fill="#6B72C4"
-        opacity="0.15"
-      />
+      {/* Massif principal — 7 pics */}
+      <polygon points={fillPoints} fill="url(#mgPrincipal)" />
 
-      {/* Ligne de chemin pointillée */}
+      {/* Ligne de crête */}
       <polyline
-        points={points.map(p => `${p.x},${p.y}`).join(' ')}
-        stroke="#E84520"
+        points={cretePoints}
+        fill="none"
+        stroke="#3D6E8E"
         strokeWidth="1.5"
-        strokeDasharray="4 3"
-        strokeLinecap="round"
-        opacity="0.7"
+        strokeLinejoin="round"
       />
 
-      {/* Étapes (cercles) */}
-      {points.slice(0, 7).map((pt, i) => {
-        const bloc = blocs[6 - i] // Inversé : sommet = bloc 7
-        const statut = bloc?.statut || 'en_attente'
-        const color = statut === 'termine'
-          ? '#22C55E'
-          : statut === 'en_cours'
-          ? '#3B82F6'
-          : statut === 'en_attente_validation'
-          ? '#F59E0B'
-          : statut === 'erreur'
-          ? '#EF4444'
-          : '#E2E6F0'
+      {/* Neige sur chaque sommet */}
+      {PICS_SVG.map(([x, y], i) => (
+        <ellipse key={`neige-${i}`} cx={x} cy={y} rx={20} ry={7} fill="white" opacity="0.72" />
+      ))}
+
+      {/* Cercles de statut sur chaque pic */}
+      {PICS_SVG.map(([x, y], i) => {
+        const statut = blocs[i]?.statut || 'en_attente'
+        const couleur =
+          statut === 'termine'              ? '#22C55E'
+          : statut === 'en_cours'           ? '#3B82F6'
+          : statut === 'en_attente_validation' ? '#F59E0B'
+          : statut === 'erreur'             ? '#EF4444'
+          : '#C8D8E8'
 
         return (
-          <g key={i}>
-            <circle cx={pt.x} cy={pt.y} r="10" fill="white" stroke={color} strokeWidth="2" />
+          <g key={`etape-${i}`} filter="url(#ombre)">
+            {/* Numéro du bloc au-dessus */}
+            <text
+              x={x} y={y - 16}
+              textAnchor="middle"
+              fontSize="10"
+              fill="white"
+              fontFamily="Inter, sans-serif"
+              fontWeight="600"
+              opacity="0.9"
+            >
+              {i + 1}
+            </text>
+            {/* Cercle statut */}
+            <circle cx={x} cy={y} r="11" fill="white" stroke={couleur} strokeWidth="2.5" />
             {statut === 'termine' && (
-              <text x={pt.x} y={pt.y + 4} textAnchor="middle" fontSize="8" fill={color}>✓</text>
+              <text x={x} y={y + 4} textAnchor="middle" fontSize="10" fill={couleur} fontWeight="bold">✓</text>
             )}
             {statut === 'en_cours' && (
-              <circle cx={pt.x} cy={pt.y} r="5" fill={color} opacity="0.8">
-                <animate attributeName="r" values="3;6;3" dur="1.5s" repeatCount="indefinite" />
-                <animate attributeName="opacity" values="1;0.3;1" dur="1.5s" repeatCount="indefinite" />
+              <circle cx={x} cy={y} r="4" fill={couleur}>
+                <animate attributeName="r" values="2;6;2" dur="1.4s" repeatCount="indefinite" />
+                <animate attributeName="opacity" values="1;0.25;1" dur="1.4s" repeatCount="indefinite" />
               </circle>
             )}
             {statut === 'en_attente_validation' && (
-              <text x={pt.x} y={pt.y + 4} textAnchor="middle" fontSize="9" fill={color}>!</text>
+              <text x={x} y={y + 4} textAnchor="middle" fontSize="11" fill={couleur} fontWeight="bold">!</text>
             )}
           </g>
         )
       })}
 
-      {/* Skieur SVG */}
+      {/* Skieur ⛷️ — miroir horizontal pour qu'il monte vers la droite */}
       <g
-        transform={`translate(${skierPos.x - 10}, ${skierPos.y - 20})`}
-        className={skierPulse ? 'animate-pulse' : ''}
+        transform={`translate(${skierX}, ${skierY - 34})`}
+        className={enAttenteValidation ? 'animate-pulse' : ''}
       >
-        {/* Corps skieur */}
-        <circle cx="10" cy="5" r="4" fill="#E84520" />  {/* Tête */}
-        <line x1="10" y1="9" x2="10" y2="18" stroke="#E84520" strokeWidth="2" strokeLinecap="round" />
-        {/* Bras */}
-        <line x1="10" y1="12" x2="5" y2="16" stroke="#E84520" strokeWidth="1.5" strokeLinecap="round" />
-        <line x1="10" y1="12" x2="15" y2="15" stroke="#E84520" strokeWidth="1.5" strokeLinecap="round" />
-        {/* Jambes / skis */}
-        <line x1="10" y1="18" x2="5" y2="22" stroke="#1A2137" strokeWidth="2" strokeLinecap="round" />
-        <line x1="10" y1="18" x2="15" y2="22" stroke="#1A2137" strokeWidth="2" strokeLinecap="round" />
-        {/* Skis */}
-        <line x1="2" y1="22" x2="8" y2="22" stroke="#6B72C4" strokeWidth="1.5" strokeLinecap="round" />
-        <line x1="12" y1="22" x2="18" y2="22" stroke="#6B72C4" strokeWidth="1.5" strokeLinecap="round" />
+        <text
+          textAnchor="middle"
+          fontSize="28"
+          dominantBaseline="auto"
+          transform="scale(-1, 1)"
+          style={{ filter: 'drop-shadow(0 2px 3px rgba(0,0,0,0.2))' }}
+        >
+          ⛷️
+        </text>
       </g>
-
-      {/* Indicateur de progression texte */}
-      <text x="200" y="275" textAnchor="middle" fontSize="11" fill="#6B7280" fontFamily="Inter, sans-serif">
-        {skierIndex} / 7 blocs terminés
-      </text>
     </svg>
   )
 }
@@ -385,10 +405,10 @@ export default function ProgressionPage() {
             {/* Label */}
             <div className="flex-1 min-w-0">
               <p className="font-medium text-brand-navy text-sm truncate">{bloc.label}</p>
-              {bloc.cout && (
-                <p className="text-xs text-text-muted font-mono">{bloc.cout.toFixed(3)} €</p>
-              )}
             </div>
+
+            {/* Coût — icône i avec tooltip */}
+            {bloc.cout && <CoutTooltip cout={bloc.cout} />}
 
             {/* Badge statut */}
             <span className={`text-xs px-2 py-0.5 rounded-full border font-medium shrink-0 ${CLASSES_STATUT[bloc.statut]}`}>
@@ -416,7 +436,10 @@ export default function ProgressionPage() {
       {/* Coût cumulé */}
       <div className="flex items-center justify-between p-4 bg-brand-navy/5 rounded-lg border border-brand-border mb-6">
         <span className="text-sm font-medium text-brand-navy">Coût cumulé</span>
-        <span className="font-mono font-bold text-brand-navy">{coutCumule.toFixed(3)} €</span>
+        <div className="flex items-center gap-2">
+          <span className="font-mono font-bold text-brand-navy">{coutCumule.toFixed(3)} €</span>
+          <CoutTooltip cout={coutCumule} label="Total" />
+        </div>
       </div>
 
       {/* Bouton résultats si terminé */}

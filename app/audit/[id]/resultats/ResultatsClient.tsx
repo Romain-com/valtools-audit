@@ -7,6 +7,7 @@ import ExpandableSection from '@/components/ui/ExpandableSection'
 import CopyButton from '@/components/ui/CopyButton'
 import StatusBadge from '@/components/ui/StatusBadge'
 import KpiCard from '@/components/ui/KpiCard'
+import CoutTooltip from '@/components/ui/CoutTooltip'
 
 // ─── Types locaux raccourcis ─────────────────────────────────────────────────
 
@@ -747,10 +748,8 @@ export default function ResultatsClient({ audit }: { audit: AuditFull }) {
                 <span className="text-sm">{bloc.icone}</span>
                 <div className="flex-1 min-w-0">
                   <span className="text-xs block truncate">{i + 1}. {bloc.label}</span>
-                  {coutBloc > 0 && (
-                    <span className="text-xs text-text-muted font-mono">{coutBloc.toFixed(3)} €</span>
-                  )}
                 </div>
+                {coutBloc > 0 && <CoutTooltip cout={coutBloc} />}
                 {hasData && (
                   <span className="w-1.5 h-1.5 rounded-full bg-status-success shrink-0" />
                 )}
@@ -772,6 +771,7 @@ export default function ResultatsClient({ audit }: { audit: AuditFull }) {
             <span>💰</span>
             <span>Coûts API</span>
             <span className="ml-auto font-mono font-semibold">{coutTotal.toFixed(3)} €</span>
+            <CoutTooltip cout={coutTotal} label="Total" />
           </button>
         </div>
       </aside>
@@ -813,9 +813,7 @@ export default function ResultatsClient({ audit }: { audit: AuditFull }) {
                         <span className="text-xs text-text-muted font-mono">Bloc {i + 1}</span>
                         <h2 className="font-bold text-brand-navy text-lg">{blocConfig.label}</h2>
                       </div>
-                      {coutBloc > 0 && (
-                        <span className="text-xs text-text-muted font-mono">{coutBloc.toFixed(3)} €</span>
-                      )}
+                      {coutBloc > 0 && <CoutTooltip cout={coutBloc} />}
                     </div>
                     {hasData ? (
                       <span className="text-xs px-2 py-1 bg-green-100 text-green-700 rounded-full border border-green-200 font-medium">

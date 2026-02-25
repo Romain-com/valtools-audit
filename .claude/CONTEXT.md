@@ -1513,6 +1513,39 @@ Compte admin créé via `supabase.auth.admin.createUser` : `admin@valraiso.fr` /
 
 ---
 
+### Améliorations UX post-tests (2026-02-25)
+
+#### SVG Montagne progression — redesign complet
+Fichier : `app/audit/[id]/progression/page.tsx`
+
+- Remplacement de la montagne unique par un **profil panoramique 7 pics** (`viewBox 0 0 900 250`).
+- Chaque pic correspond à un bloc d'audit (de gauche à droite).
+- Coordonnées `PICS_SVG` (sommets) + `CRETE_SVG` (profil complet avec vallées) définies en constantes globales.
+- Fond ciel `#EEF3F9`, massif principal gradient bleu `#7AAAC8→#4E7E9E`, plan arrière semi-transparent.
+- Neige blanche elliptique sur chaque sommet.
+- Cercles de statut numérotés 1–7 au sommet de chaque pic (vert ✓ / bleu pulsé / orange ! / rouge).
+- **Skieur ⛷️** positionné au sommet du dernier bloc terminé. Miroir horizontal via `transform="scale(-1, 1)"` pour qu'il monte vers la droite.
+- Skieur `animate-pulse` si un bloc est en attente de validation.
+
+#### Composant CoutTooltip
+Fichier : `components/ui/CoutTooltip.tsx`
+
+- Icône `i` circulaire (16×16) discrète, qui passe en orange au survol.
+- Tooltip `bg-brand-navy` avec montant `.toFixed(4) €` + flèche pointant vers le bas.
+- Prop optionnelle `label` pour préfixer le montant dans le tooltip.
+- Appliqué partout où des coûts API apparaissent :
+
+| Emplacement | Comportement |
+|------------|-------------|
+| Progression — ligne de chaque bloc | Icône `i` remplace le texte brut |
+| Progression — Coût cumulé | Montant visible + `i` à côté |
+| Résultats — sidebar par bloc | Icône `i` remplace le texte brut |
+| Résultats — bouton "Coûts API" | Montant total visible + `i` à côté |
+| Résultats — en-tête de chaque bloc | Icône `i` remplace le texte brut |
+| Onglet Coûts API | Inchangé (tableau détaillé — c'est sa raison d'être) |
+
+---
+
 ### Phase 3B — À faire
 - Logique de validation bloc 4 : affichage keywords classifiés + sélection manuelle avant SERP live
 - Logique de validation bloc 7 : affichage concurrents IA + correction manuelle avant analyse SEO
