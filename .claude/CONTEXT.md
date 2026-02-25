@@ -1,5 +1,5 @@
 # CONTEXT.MD — Destination Digital Audit App
-> Dernière mise à jour : Phase 2 — Bloc 6 Stock commercialisé en ligne (OTA + site OT) ✅ (2026-02-25)
+> Dernière mise à jour : Phase 2 — Bloc 7 Concurrents v2 ✅ (2026-02-25)
 > Destination de test de référence : **Annecy** | Domaine OT : `lac-annecy.com`
 
 ---
@@ -292,8 +292,8 @@ PAGESPEED_API_KEY=AIza...
 | Stock commercialisé OTA (hébergements) | Airbnb + Booking (Playwright) | ✅ Bloc 6 terminé |
 | Stock commercialisé OTA (activités) | Viator (Playwright — bloqué Cloudflare → 0) | ⚠️ Bloc 6 partiel |
 | Analyse site OT (réservable / lien OTA / listing) | Playwright site OT | ✅ Bloc 6 terminé |
-| Concurrents directs (3) + indirects (3) | OpenAI | ✅ |
-| Métriques concurrents | DataForSEO + Haloscan | ✅ |
+| Concurrents (5) + métriques SEO/Maps | OpenAI + Haloscan + DataForSEO | ✅ Bloc 7 terminé |
+| Synthèse comparative destination vs concurrents | OpenAI | ✅ Bloc 7 terminé |
 | Contenus GDoc/GSlides | OpenAI (copier-coller manuel) | ✅ |
 | Backlinks | ❌ supprimé du scope | — |
 
@@ -1171,6 +1171,134 @@ TOTAL                  : 0.001€
 - ⚠️ `export const runtime = 'nodejs'` obligatoire sur tous les route handlers Playwright
 - ⚠️ `maxDuration: 300` pour le route handler Airbnb (grandes villes = 5-8 min)
 
+#### Bloc 7 — Concurrents v2 ✅ TERMINÉ (2026-02-25)
+
+**Architecture** :
+```
+app/api/blocs/concurrents/
+├── identification/route.ts   → OpenAI : 6 candidats → filtre subdivisions → 5 concurrents
+├── metriques/route.ts        → Séquence SEO 5 étapes + DataForSEO Maps (par concurrent)
+└── synthese/route.ts         → OpenAI synthèse comparative (+ insight_gap optionnel)
+
+lib/blocs/concurrents-phase-a.ts  → orchestrateur Phase A (automatique)
+lib/blocs/concurrents-phase-b.ts  → orchestrateur Phase B (après validation utilisateur)
+types/concurrents.ts              → tous les types TypeScript
+scripts/test-bloc-concurrents.js  → test standalone
+```
+
+**Flux Phase A** (automatique) :
+```
+1. Parallèle :
+   POST /identification  → OpenAI (6 candidats)
+                           Filtre dur : exclure subdivisions de la destination
+                           .slice(0, 5) → 5 concurrents max
+   getSiteCompetitors()  → Haloscan siteCompetitors (domaine_ot cible)
+                           10 concurrents SEO réels avec common_keywords, missed_keywords
+                           Timeout 60s — réponse ~20-30s
+
+2. Validation domaines incertains (confiance_domaine === 'incertain') :
+   → SERP DataForSEO "tourisme [nom]" → filtre OTA/Wikipedia → premier domaine organique
+   → Fallback : conserver domaine_ot estimé par OpenAI
+
+3. Boucle séquentielle × 5 concurrents (sleep 500ms entre chaque) :
+   POST /metriques → séquence SEO 5 étapes + DataForSEO Maps (parallèle)
+   Enrichissement : si séquence retourne 0 ET haloscan_match.keywords > 0
+     → metriques.total_keywords = haloscan_match.keywords
+     → metriques.source_seo = 'haloscan_competitors'
+
+4. haloscan_suggestions : concurrents Haloscan non proposés par OpenAI (max 3)
+5. enregistrerCoutsBloc() → Supabase fire & forget
+→ statut: 'en_attente_validation'
+```
+
+**Séquence SEO 5 étapes** (dans `metriques/route.ts`) :
+```
+Étape 1 — Haloscan domains/overview domaine nu
+Étape 2 — Haloscan domains/overview www.domaine
+Étape 3 — Haloscan domains/positions (lineCount: 1 — vérification existence)
+           ⚠️ total_traffic = 0 (non disponible sans charger tous les résultats)
+Étape 4 — DataForSEO ranked_keywords/live domaine nu (limit: 1)
+Étape 5 — DataForSEO ranked_keywords/live www.domaine
+→ site_non_indexe: true UNIQUEMENT si toutes les 5 étapes retournent 0
+```
+
+⚠️ **Parsing DataForSEO ranked_keywords pour métriques domaine** :
+```javascript
+// ✅ CORRECT — métriques globales du domaine (pas les keywords individuels)
+const result = response.data?.tasks?.[0]?.result?.[0]
+const organic = result?.metrics?.organic   // ← niveau metrics.organic (pas items[0])
+// Champs : organic.count (total_keywords), organic.etv (trafic estimé)
+
+// ❌ FAUX — items[0] est un keyword individuel, pas les stats globales
+const organic = result?.items?.[0]?.metrics?.organic
+```
+
+**Haloscan siteCompetitors** :
+- Endpoint : `POST https://api.haloscan.com/api/domains/siteCompetitors`
+- Payload : `{ input: domaine_ot, mode: 'root', lineCount: 10 }`
+- Retourne : `results[{ root_domain, common_keywords, total_traffic, keywords_vs_max, missed_keywords, bested, keywords }]`
+- `missed_keywords` = keywords du concurrent absents de la destination → gap potentiel pour la synthèse
+- Matching domaine : `.includes()` dans les deux sens (ex: `ot-chamonix.com` vs `chamonix.com`)
+
+**Pause UI** — l'utilisateur peut supprimer un concurrent incohérent (pas en ajouter)
+
+**Flux Phase B** (après validation) :
+```
+1. Construction tableau_comparatif (destination cible + concurrents validés)
+2. insight_gap : si haloscan_match.missed_keywords > 1000 → string transmise à OpenAI
+   (en dessous de 1000 : trop peu significatif)
+3. POST /synthese → OpenAI + insight_gap optionnel
+4. enregistrerCoutsBloc() → Supabase (coûts agrégés Phase A + B)
+→ statut: 'termine'
+```
+
+**SourceSEO — type union** :
+```typescript
+type SourceSEO = 'haloscan' | 'haloscan_positions' | 'haloscan_competitors' | 'dataforseo_ranked' | 'inconnu'
+// 'haloscan_positions' : Haloscan positions (trafic = 0)
+// 'haloscan_competitors' : données issues de siteCompetitors (séquence SEO à 0 mais match trouvé)
+// 'dataforseo_ranked'    : ranked_keywords/live (remplace domain_rank_overview)
+// 'inconnu' + site_non_indexe: true : toutes les 5 étapes épuisées → vrai 0 confirmé
+```
+
+**Piège critique — filtre subdivisions** :
+- OpenAI propose systématiquement des communes-associées (ex: "Annecy-le-Vieux" quand destination = "Annecy")
+- Double protection : instruction dans le prompt + filtre dur côté code (normalisé sans accents)
+- OpenAI demande 6 candidats pour compenser le filtre → `.slice(0, 5)` en sortie
+
+**`taux_dependance_ota` — valeur brute, pas pourcentage** :
+- Vaut `(airbnb + booking) / hebergements_physiques` → ex: 9.8x (pas 9.8%)
+- Dans le prompt synthèse : `taux_dependance_ota.toFixed(1)}x` — ne jamais multiplier par 100
+
+**Tests validés — Annecy (v2, 2026-02-25)** :
+| Concurrent | Keywords | Trafic | Note Google | Source SEO | Indexé |
+|---|---|---|---|---|---|
+| Chamonix-Mont-Blanc | 70 755 | 176 206 | 4.4/5 (1866 avis) | haloscan | ✅ |
+| Évian-les-Bains | 36 | 4 | 4.3/5 (749 avis) | haloscan | ✅ |
+| Aix-les-Bains | 0 | 0 | 4.3/5 (553 avis) | inconnu | ❌ (5 sources) |
+| Saint-Gervais-les-Bains | 27 788 | 40 577 | 4.3/5 (361 avis) | haloscan | ✅ |
+| La Clusaz | 24 322 | 1 016 314 | 4.1/5 (154 avis) | haloscan | ✅ |
+
+Position globale Annecy : **LEADER** (53 842 kw / 161 645 visites)
+Durée Phase A : 46s | Coût total : 0.143€
+
+> **Note v2 vs v1** : Chamonix (0→70 755 kw) et Saint-Gervais (0→27 788 kw) désormais correctement indexés grâce à la séquence 5 étapes. La Clusaz remplace Annecy-le-Vieux (filtré). Aix-les-Bains reste non indexé — confirmé par 5 sources.
+
+**Coût du bloc** :
+```
+OpenAI identification (1 appel)             : 0.001€
+Haloscan siteCompetitors (1 appel)          : 0.010€
+Haloscan overview (5-10 appels étapes 1-2)  : 0.050-0.100€
+Haloscan positions (0-5 appels étape 3)     : 0-0.050€
+DataForSEO ranked (0-10 appels étapes 4-5)  : 0-0.060€
+DataForSEO Maps (5 appels)                  : 0.030€
+DataForSEO SERP validation (0-5 appels)     : 0-0.030€
+OpenAI synthèse (1 appel)                   : 0.001€
+TOTAL cas typique (Annecy)                  : 0.143€
+```
+
+---
+
 ### Phase 3 — Orchestration et UX
 - Page lancement + autocomplete + gestion doublon
 - Progression temps réel (Supabase Realtime)
@@ -1242,3 +1370,4 @@ DATA_TOURISME_API_URL=http://localhost:3001
 | `test-bloc5.js` | Bloc 5 — test Annecy (DATA Tourisme /stocks, Recherche Entreprises, déduplication, OpenAI) |
 | `scripts/scan-datatourisme-types.js` | Préparation Bloc 5 — scan tous types @type DATA Tourisme sans filtre (node scripts/scan-datatourisme-types.js [code_insee]) |
 | `scripts/test-bloc6.js` | Bloc 6 — test Annecy (bbox, Airbnb, Booking, Viator, site OT, OpenAI — node scripts/test-bloc6.js "Annecy" "74010" "lac-annecy.com") |
+| `scripts/test-bloc-concurrents.js` | Bloc 7 v2 — test Annecy Phase A + B (séquence SEO 5 étapes + siteCompetitors — Next.js requis — node scripts/test-bloc-concurrents.js "Annecy" "74010" "lac-annecy.com") |

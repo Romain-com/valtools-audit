@@ -12,6 +12,8 @@ export const API_COSTS = {
   openai_gpt4o_mini: 0.001,     // par appel gpt-4o-mini (estimation)
   haloscan: 0.01,               // par appel domains/overview (1 crédit)
   haloscan_keywords: 0.01,      // par appel keywords/overview (1 crédit)
+  haloscan_positions: 0.01,     // par appel domains/positions (1 crédit site + export si résultats)
+  haloscan_site_competitors: 0.01, // par appel domains/siteCompetitors (1 crédit site + ~10 export)
   pagespeed: 0,                 // gratuit (API Google)
   monitorank: 0,                // inclus dans le forfait
   data_economie: 0,             // API publique gratuite
