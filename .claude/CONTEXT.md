@@ -1,5 +1,5 @@
 # CONTEXT.MD — Destination Digital Audit App
-> Dernière mise à jour : Migration OpenAI gpt-5-mini ✅ (2026-02-25)
+> Dernière mise à jour : Validation Supabase complète ✅ (2026-02-25)
 > Destination de test de référence : **Annecy** | Domaine OT : `lac-annecy.com`
 
 ---
@@ -393,7 +393,7 @@ Affiché dans l'interface :
 - [ ] Créer projet Supabase → noter URL + anon key + service role key
 - [ ] Créer clé Google PageSpeed (Google Cloud Console)
 
-### Phase 1 — Fondations ✅ TERMINÉE (2026-02-23) + Schéma Supabase ✅ (2026-02-25)
+### Phase 1 — Fondations ✅ TERMINÉE (2026-02-23) + Schéma Supabase ✅ + Validation Supabase ✅ (2026-02-25)
 - Setup Next.js + Tailwind + Supabase + Auth + GitHub
 - Schéma BDD et migrations Supabase
 - **Microservice Node.js local : CSV communes + DATA Tourisme ✅**
@@ -433,10 +433,31 @@ supabase/
 - Destination Annecy (SIREN 200063402, INSEE 74010) + audit complet statut `termine`
 - `resultats` JSONB : 7 blocs complets avec toutes les données documentées
 - `couts_api` JSONB : agrégat par bloc (total audit ≈ 0,516 €)
-- 5 concurrents dans la table `competitors` (Chamonix, Évian, Aix-les-Bains, Saint-Gervais, La Clusaz)
+- ~~5 concurrents dans la table `competitors`~~ → **table supprimée (migration 005)** — les concurrents sont uniquement dans `resultats.concurrents` (JSONB)
 - Valeurs marquées "estimé" dans `schema-documentation.md` : `instagram.posts_count` Annecy, détails PageSpeed LCP/CLS/INP, `analyse_site_ot`
 
-**⚠️ Champ ambigu** : `competitors.type` (`direct | indirect`) — présent dans le schéma CONTEXT.md mais absent des types TypeScript. Conservé comme spécifié.
+#### Validation Supabase — `scripts/test-supabase.js` ✅ (2026-02-25)
+
+Script de validation ESM (`@supabase/supabase-js` + dotenv) — utilise `SUPABASE_SERVICE_ROLE_KEY` (bypass RLS).
+
+| Bloc | Donnée validée | Valeur seed |
+|------|---------------|-------------|
+| 1 | Google OT | 4.2/5 — 340 avis |
+| 1 | Instagram posts_count | 8 500 000 |
+| 2 | Taxe de séjour collecteur | 3 440 837 € |
+| 3 | Keywords Haloscan (lac-annecy.com) | 53 842 |
+| 3 | Score visibilité OT | 1/5 |
+| 4 | Score gap SEO | 8/10 |
+| 4 | Top opportunité | "évènement annecy" — 49 500 req/mois |
+| 5 | Stock physique total | 2 213 hébergements |
+| 6 | Airbnb annonces | 4 246 |
+| 7 | Position globale concurrents | leader |
+| 7 | Concurrents validés | 5 |
+| — | Coût total audit | 0.516 € |
+
+**Contrainte UNIQUE** : doublon `destination_id` correctement refusé (code PG `23505`).
+
+**Note clé** : `SUPABASE_SERVICE_ROLE_KEY` = format `sb_secret_...` (pas un JWT). Requis pour tous les Route Handlers Next.js (bypass RLS). Clé `anon` retourne 0 lignes (RLS `authenticated` uniquement).
 
 #### Microservice — Résultats de validation
 - **34 968 communes** indexées depuis `identifiants-communes-2024.csv`
