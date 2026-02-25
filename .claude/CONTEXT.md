@@ -1,5 +1,5 @@
 # CONTEXT.MD — Destination Digital Audit App
-> Dernière mise à jour : Assets SVG officiels Valraiso — Navbar + Login (2026-02-25)
+> Dernière mise à jour : Fond décoratif Valraiso global via layout (2026-02-25)
 > Destination de test de référence : **Annecy** | Domaine OT : `lac-annecy.com`
 
 ---
@@ -1559,9 +1559,17 @@ Fichiers source : `ressources/` (inline dans TSX — pas de `/public/`, pas de r
 
 **Login** :
 - Logo `Logo-Valraiso-couleurs.svg` centré (viewBox `60 85 820 168`, `h-12`) : texte navy `#18152b` + A orange `#ff450b`
-- Décoration fond haut-droite : `Chemin-plein.svg` (vague orange pleine, `opacity-[0.07]`, `w-[480px]`, `-top-24 -right-48`)
-- Décoration fond bas-gauche : `Chemin-pointille-orange.svg` (tracé pointillé, `opacity-25`, `w-[380px]`, `-bottom-40 -left-32`)
-- Fonds dégradés abstraits précédents supprimés
+- Décorations fond supprimées (gérées par le layout global — voir ci-dessous)
+
+#### Fond décoratif global — `app/layout.tsx` (2026-02-25)
+
+Les SVG décoratifs sont placés dans le layout racine en couche `fixed z-0`, derrière tout le contenu. Ils s'affichent sur **toutes les pages** de façon cohérente.
+
+- `Chemin-plein.svg` — haut-droite, `w-[520px]`, `opacity-[0.055]`, `-top-32 -right-52`
+- `Chemin-pointillé-orange.svg` — bas-gauche, `w-[420px]`, `opacity-[0.18]`, `-bottom-48 -left-36`
+- Couche `fixed inset-0 overflow-hidden pointer-events-none z-0`
+- Navbar : `z-50` (sticky) — au-dessus du fond
+- `<main>` : `relative z-10` — au-dessus du fond
 
 ---
 
