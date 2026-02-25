@@ -1,5 +1,5 @@
 # CONTEXT.MD — Destination Digital Audit App
-> Dernière mise à jour : Fond décoratif Valraiso global via layout (2026-02-25)
+> Dernière mise à jour : Phase 3B — Orchestrateur principal + Observabilité (2026-02-25)
 > Destination de test de référence : **Annecy** | Domaine OT : `lac-annecy.com`
 
 ---
@@ -1488,7 +1488,7 @@ else (clé présente) → 'termine'
 - ✅ 4 pages UI complètes (dashboard, nouveau, progression, résultats)
 - ✅ 6 composants UI réutilisables
 - ✅ Seed Annecy permet de visualiser tous les blocs sans lancer de vrai audit
-- ⏳ Phase 3B : logique de validation réelle des blocs 4 (keywords Phase B) et 7 (concurrents) — placeholders en place
+- ✅ Phase 3B : orchestrateur + modales de validation blocs 4 et 7 + panneau logs — voir section Phase 3B ci-dessous
 
 ---
 
@@ -1573,11 +1573,112 @@ Les SVG décoratifs sont placés dans le layout racine en couche `fixed z-0`, de
 
 ---
 
-### Phase 3B — À faire
-- Logique de validation bloc 4 : affichage keywords classifiés + sélection manuelle avant SERP live
-- Logique de validation bloc 7 : affichage concurrents IA + correction manuelle avant analyse SEO
-- Orchestrateur général : lancement séquentiel des 7 blocs depuis `/api/audits/lancer`
-- Mise à jour Supabase Realtime depuis chaque bloc (écriture `resultats` + `couts_api` au fil de l'eau)
+### Phase 3B — Orchestrateur principal + Observabilité ✅ TERMINÉE (2026-02-25)
+
+**Objectif** : orchestrateur principal séquentiel, pauses de validation interactives, observabilité temps réel via `audit_logs`.
+
+#### Architecture — 3 segments
+
+L'audit est découpé en **3 segments** séparés pour gérer les deux pauses de validation :
+
+```
+Segment A (maxDuration=300) : Blocs 1 → 2 → 3 → 4 Phase A
+            → pause : bloc4 = 'en_attente_validation'
+
+Segment B (maxDuration=300) : Bloc 4 Phase B → Bloc 5 → Bloc 6 → Bloc 7 Phase A
+            → pause : bloc7 = 'en_attente_validation'
+
+Segment C (maxDuration=120) : Bloc 7 Phase B
+            → statut global : 'termine'
+```
+
+#### Table `audit_logs` (créée Phase 3B)
+
+```sql
+CREATE TABLE public.audit_logs (
+  id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  audit_id    UUID        REFERENCES public.audits(id) ON DELETE CASCADE,
+  bloc        TEXT,
+  niveau      TEXT NOT NULL CHECK (niveau IN ('info', 'warning', 'error')),
+  message     TEXT NOT NULL,
+  detail      JSONB,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_audit_logs_audit_id ON public.audit_logs USING btree (audit_id);
+CREATE INDEX idx_audit_logs_niveau ON public.audit_logs USING btree (niveau);
+ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "audit_logs_select_authenticated" ON public.audit_logs FOR SELECT TO authenticated USING (true);
+CREATE POLICY "audit_logs_insert_authenticated" ON public.audit_logs FOR INSERT TO authenticated WITH CHECK (true);
+```
+
+#### Structure `blocs_statuts` dans `audits.resultats`
+
+Clé `blocs_statuts` ajoutée dans `audits.resultats` — source de vérité de l'orchestrateur :
+
+```typescript
+type StatutBloc = 'en_attente' | 'en_cours' | 'termine' | 'en_attente_validation' | 'erreur'
+// Valeurs : bloc1..bloc7 → StatutBloc
+```
+
+Les coûts de l'orchestrateur sont stockés dans `couts_api` sous `bloc1`..`bloc7` (clés distinctes des clés internes des blocs comme `positionnement`, `schema_digital` etc.).
+
+#### Fichiers créés
+
+**Librairie orchestrateur** :
+```
+lib/orchestrateur/
+├── blocs-statuts.ts      → Types StatutBloc, BlocsStatuts, ParamsAudit, ResultatBloc
+├── logger.ts             → logInfo / logWarning / logError → audit_logs (fire & forget)
+├── supabase-updates.ts   → mettreAJourBloc, mettreAJourStatutAudit, lireParamsAudit,
+│                           lireBlocsStatuts, initialiserBlocsStatutsEnBase
+│                           ⚠️ Merge JSONB manuel (read → merge → write) — pas d'opérateur ||
+└── wrappers/
+    ├── bloc1.ts  → auditPositionnement() + normalisation hashtag
+    ├── bloc2.ts  → lancerBlocVolumeAffaires()
+    ├── bloc3.ts  → lancerBlocSchemaDigital()
+    ├── bloc4.ts  → lancerPhaseA() + lancerPhaseB() (lit couts_phase_a depuis Supabase)
+    ├── bloc5.ts  → lancerBlocStocksPhysiques()
+    ├── bloc6.ts  → lancerBlocStockEnLigne() (croise avec Bloc 5 via Supabase)
+    └── bloc7.ts  → lancerPhaseAConcurrents() + lancerPhaseBConcurrents()
+                    (construit ContexteAuditPourConcurrents depuis blocs 1-6 en parallèle)
+```
+
+**Route Handlers** :
+```
+app/api/orchestrateur/
+├── segment-a/route.ts  → POST { audit_id } — Blocs 1→2→3→4A
+├── segment-b/route.ts  → POST { audit_id, keywords_valides[] } — Blocs 4B→5→6→7A
+├── segment-c/route.ts  → POST { audit_id, concurrents_valides[] } — Bloc 7B
+└── statut/route.ts     → GET ?audit_id= — polling fallback Realtime
+```
+
+Tous avec `export const runtime = 'nodejs'` (Playwright dans Bloc 6).
+
+#### Page progression — mises à jour Phase 3B
+
+`app/audit/[id]/progression/page.tsx` :
+- **Déclenchement automatique Segment A** : `useEffect` sur `audit.statut === 'en_cours'` + tous blocs `en_attente` → `fetch /api/orchestrateur/segment-a` (ref pour éviter double déclenchement StrictMode)
+- **Supabase Realtime logs** : nouveau channel sur `audit_logs` filtré par `audit_id` → s'ouvre automatiquement si erreur
+- **Modale keywords Bloc 4** : tableau interactif avec checkbox, pré-cochage `gap && intent_transactionnel`, colonnes keyword/volume/catégorie/gap/transac → `POST /api/orchestrateur/segment-b`
+- **Modale concurrents Bloc 7** : tableau des 5 concurrents + bouton supprimer + section `haloscan_suggestions` → `POST /api/orchestrateur/segment-c`
+- **Panneau logs dépliable** (fermé par défaut, s'ouvre sur erreur) : timestamp + bloc + niveau + message + bouton Détail (JSON indenté) + bouton **"Copier pour Claude"** sur chaque erreur
+- **Extraction blocs_statuts** : priorité à `resultats.blocs_statuts` (orchestrateur), fallback sur déduction depuis `resultats` (compatibilité)
+
+#### Idempotence et robustesse
+
+- Chaque segment vérifie le statut avant d'agir — `409 Conflict` si déjà dans le bon état
+- Ref `segmentALanceRef` → Segment A ne peut être lancé qu'une fois même en StrictMode
+- Erreurs de blocs non bloquantes — `logError` + statut `erreur` + l'audit continue
+- Retour sur la page progression → détecte l'état en cours et affiche le bon statut sans relancer
+
+#### Coûts estimés pour Chamonix-Mont-Blanc
+
+| Segment | Durée estimée | Coût estimé |
+|---------|---------------|-------------|
+| Segment A (Blocs 1-4A) | 8-12 min | 0.80-1.20 € |
+| Segment B (Blocs 4B-7A) | 15-25 min | 1.50-2.50 € |
+| Segment C (Bloc 7B) | 2-3 min | 0.05 € |
+| **Total** | **25-40 min** | **~2.50-3.80 €** |
 
 ### Phase 4 — Page de résultats (intégrée Phase 3A)
 ✅ Structure complète affichée — données réelles via seed Annecy.

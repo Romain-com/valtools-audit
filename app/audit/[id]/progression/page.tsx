@@ -1,12 +1,15 @@
 'use client'
 // Page de progression d'un audit — montagne SVG + Supabase Realtime
-import { useEffect, useState } from 'react'
+// Phase 3B : orchestrateur principal + modales validation + panneau logs
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
 import Modal from '@/components/ui/Modal'
 import Spinner from '@/components/ui/Spinner'
 import CoutTooltip from '@/components/ui/CoutTooltip'
+import type { KeywordClassifie } from '@/types/visibilite-seo'
+import type { ConcurrentIdentifie } from '@/types/concurrents'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -23,9 +26,18 @@ interface BlocStatut {
 interface AuditData {
   id: string
   statut: string
-  resultats: Record<string, { statut?: string }> | null
+  resultats: Record<string, unknown> | null
   couts_api: Record<string, { total?: number; total_bloc?: number }> | null
   destinations?: { nom: string }
+}
+
+interface LogEntry {
+  id: string
+  bloc: string | null
+  niveau: 'info' | 'warning' | 'error'
+  message: string
+  detail: Record<string, unknown> | null
+  created_at: string
 }
 
 // ─── Configuration des 7 blocs ───────────────────────────────────────────────
@@ -39,6 +51,17 @@ const BLOCS_CONFIG: Omit<BlocStatut, 'statut' | 'cout'>[] = [
   { id: 'stock_en_ligne',   label: 'Stock en ligne',                icone: '🌐' },
   { id: 'concurrents',      label: 'Concurrents',                   icone: '🏔️' },
 ]
+
+// Correspondance id_bloc → clé couts_api
+const BLOC_ID_TO_COUTS_KEY: Record<string, string> = {
+  positionnement:   'bloc1',
+  volume_affaires:  'bloc2',
+  schema_digital:   'bloc3',
+  visibilite_seo:   'bloc4',
+  stocks_physiques: 'bloc5',
+  stock_en_ligne:   'bloc6',
+  concurrents:      'bloc7',
+}
 
 // ─── SVG Montagne panoramique — 7 pics, un par bloc ─────────────────────────
 
@@ -226,19 +249,367 @@ const CLASSES_STATUT: Record<StatutBloc, string> = {
   erreur: 'text-status-error bg-red-50 border-red-200',
 }
 
-// ─── Modales de validation (placeholders Phase 3B) ───────────────────────────
+const CLASSES_LOG_NIVEAU: Record<string, string> = {
+  info: 'text-blue-700 bg-blue-50',
+  warning: 'text-amber-700 bg-amber-50',
+  error: 'text-red-700 bg-red-50',
+}
 
-const VALIDATION_CONFIG: Record<string, { titre: string; description: string }> = {
-  visibilite_seo: {
-    titre: 'Validation — Keywords Phase B',
-    description:
-      'Les keywords de la Phase A ont été collectés et classifiés. Vérifiez la liste avant de lancer la Phase B (SERP live + calcul du score gap).',
-  },
-  concurrents: {
-    titre: 'Validation — Concurrents identifiés',
-    description:
-      'L\'IA a identifié 5 concurrents pour cette destination. Vérifiez la sélection avant de lancer l\'analyse comparative.',
-  },
+// ─── Panneau Logs ─────────────────────────────────────────────────────────────
+
+function PanneauLogs({
+  logs,
+  ouvert,
+  onToggle,
+  nomDestination,
+  blocsStatuts,
+  statutAudit,
+}: {
+  logs: LogEntry[]
+  ouvert: boolean
+  onToggle: () => void
+  nomDestination: string
+  blocsStatuts: Record<string, StatutBloc>
+  statutAudit: string
+}) {
+  const [detailOuvert, setDetailOuvert] = useState<string | null>(null)
+
+  function copierPourClaude(log: LogEntry) {
+    const segment =
+      log.bloc && ['bloc1', 'bloc2', 'bloc3', 'bloc4'].includes(log.bloc ?? '') ? 'segment-a'
+      : log.bloc && ['bloc5', 'bloc6', 'bloc7'].includes(log.bloc ?? '') ? 'segment-b/c'
+      : 'inconnu'
+
+    const blocsTermines = Object.entries(blocsStatuts)
+      .filter(([, s]) => s === 'termine')
+      .map(([b]) => b)
+      .join(', ')
+
+    const texte = `## Erreur audit ${nomDestination} — ${log.bloc ?? 'global'}
+
+**Message** : ${log.message}
+**Timestamp** : ${log.created_at}
+**Segment** : ${segment}
+
+**Détail technique** :
+${log.detail ? JSON.stringify(log.detail, null, 2) : '(aucun détail)'}
+
+**Contexte** :
+- Destination : ${nomDestination}
+- Statut audit : ${statutAudit}
+- Blocs terminés avant l'erreur : ${blocsTermines || '(aucun)'}
+
+**Stack trace** (si disponible) :
+${(log.detail?.stack as string) ?? '(non disponible)'}`
+
+    navigator.clipboard.writeText(texte).catch(() => {})
+  }
+
+  const nbErreurs = logs.filter(l => l.niveau === 'error').length
+
+  return (
+    <div className="border border-brand-border rounded-lg overflow-hidden">
+      {/* En-tête dépliable */}
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center justify-between px-4 py-3 bg-brand-bg hover:bg-gray-50 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-brand-navy">Logs d&apos;exécution</span>
+          {nbErreurs > 0 && (
+            <span className="text-xs px-1.5 py-0.5 bg-red-100 text-red-700 rounded-full font-medium">
+              {nbErreurs} erreur{nbErreurs > 1 ? 's' : ''}
+            </span>
+          )}
+          <span className="text-xs text-text-muted">{logs.length} entrée{logs.length > 1 ? 's' : ''}</span>
+        </div>
+        <svg
+          viewBox="0 0 20 20"
+          className={`w-4 h-4 text-text-secondary transition-transform ${ouvert ? 'rotate-180' : ''}`}
+          fill="currentColor"
+        >
+          <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+        </svg>
+      </button>
+
+      {/* Corps dépliable */}
+      {ouvert && (
+        <div className="divide-y divide-brand-border max-h-80 overflow-y-auto">
+          {logs.length === 0 ? (
+            <p className="text-xs text-text-muted px-4 py-3 italic">Aucun log pour le moment.</p>
+          ) : (
+            logs.map(log => (
+              <div key={log.id} className={`px-4 py-2.5 text-xs ${CLASSES_LOG_NIVEAU[log.niveau] ?? ''}`}>
+                <div className="flex items-start gap-2">
+                  {/* Timestamp */}
+                  <span className="shrink-0 text-[10px] text-text-muted font-mono mt-0.5">
+                    {new Date(log.created_at).toLocaleTimeString('fr-FR', {
+                      hour: '2-digit', minute: '2-digit', second: '2-digit'
+                    })}
+                  </span>
+
+                  {/* Bloc */}
+                  {log.bloc && (
+                    <span className="shrink-0 text-[10px] px-1 py-0.5 rounded bg-white/50 border border-current/20 font-mono">
+                      {log.bloc}
+                    </span>
+                  )}
+
+                  {/* Niveau */}
+                  <span className="shrink-0 font-semibold uppercase text-[10px]">{log.niveau}</span>
+
+                  {/* Message */}
+                  <span className="flex-1 leading-relaxed">{log.message}</span>
+
+                  {/* Actions */}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {log.detail && (
+                      <button
+                        onClick={() => setDetailOuvert(detailOuvert === log.id ? null : log.id)}
+                        className="text-[10px] px-1.5 py-0.5 rounded border border-current/30 hover:bg-white/30 transition-colors"
+                      >
+                        Détail
+                      </button>
+                    )}
+                    {log.niveau === 'error' && (
+                      <button
+                        onClick={() => copierPourClaude(log)}
+                        className="text-[10px] px-1.5 py-0.5 rounded border border-current/30 hover:bg-white/30 transition-colors font-medium"
+                        title="Copier le contexte d'erreur pour Claude"
+                      >
+                        Copier pour Claude
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Détail JSON déplié */}
+                {detailOuvert === log.id && log.detail && (
+                  <pre className="mt-2 p-2 bg-white/40 rounded text-[10px] font-mono overflow-x-auto whitespace-pre-wrap border border-current/20">
+                    {JSON.stringify(log.detail, null, 2)}
+                  </pre>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Modale validation Bloc 4 — Keywords ─────────────────────────────────────
+
+function ModalValidationKeywords({
+  keywords,
+  onConfirm,
+  onClose,
+}: {
+  keywords: KeywordClassifie[]
+  onConfirm: (keywordsValides: KeywordClassifie[]) => void
+  onClose: () => void
+}) {
+  const [selection, setSelection] = useState<Set<string>>(
+    () => new Set(
+      keywords
+        .filter(k => k.gap && k.intent_transactionnel)
+        .map(k => k.keyword)
+    )
+  )
+  const [envoi, setEnvoi] = useState(false)
+
+  function toggleKeyword(keyword: string) {
+    setSelection(prev => {
+      const next = new Set(prev)
+      if (next.has(keyword)) next.delete(keyword)
+      else next.add(keyword)
+      return next
+    })
+  }
+
+  function handleConfirm() {
+    const valides = keywords.filter(k => selection.has(k.keyword))
+    if (valides.length === 0) return
+    setEnvoi(true)
+    onConfirm(valides)
+  }
+
+  return (
+    <Modal open={true} onClose={onClose} title="Validation — Keywords Phase B" blocking>
+      <div className="space-y-4">
+        <p className="text-sm text-text-secondary">
+          Sélectionnez les keywords à analyser en Phase B (SERP live + calcul du score gap).
+          Les keywords avec <strong>gap + intent transactionnel</strong> sont pré-cochés.
+        </p>
+
+        <div className="text-xs text-text-muted">
+          {selection.size} keyword{selection.size > 1 ? 's' : ''} sélectionné{selection.size > 1 ? 's' : ''}
+        </div>
+
+        {/* Tableau keywords */}
+        <div className="border border-brand-border rounded-lg overflow-hidden max-h-72 overflow-y-auto">
+          <table className="w-full text-xs">
+            <thead className="bg-brand-bg border-b border-brand-border sticky top-0">
+              <tr>
+                <th className="px-3 py-2 text-left font-medium text-text-secondary">✓</th>
+                <th className="px-3 py-2 text-left font-medium text-text-secondary">Keyword</th>
+                <th className="px-3 py-2 text-right font-medium text-text-secondary">Volume</th>
+                <th className="px-3 py-2 text-left font-medium text-text-secondary">Catégorie</th>
+                <th className="px-3 py-2 text-center font-medium text-text-secondary">Gap</th>
+                <th className="px-3 py-2 text-center font-medium text-text-secondary">Transac.</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-brand-border">
+              {keywords.map(k => (
+                <tr
+                  key={k.keyword}
+                  className={`cursor-pointer hover:bg-gray-50 ${selection.has(k.keyword) ? 'bg-blue-50/40' : ''}`}
+                  onClick={() => toggleKeyword(k.keyword)}
+                >
+                  <td className="px-3 py-2">
+                    <input
+                      type="checkbox"
+                      checked={selection.has(k.keyword)}
+                      onChange={() => toggleKeyword(k.keyword)}
+                      className="rounded"
+                      onClick={e => e.stopPropagation()}
+                    />
+                  </td>
+                  <td className="px-3 py-2 font-medium text-brand-navy">{k.keyword}</td>
+                  <td className="px-3 py-2 text-right font-mono">{k.volume.toLocaleString('fr-FR')}</td>
+                  <td className="px-3 py-2 text-text-secondary">{k.categorie}</td>
+                  <td className="px-3 py-2 text-center">{k.gap ? '✓' : '—'}</td>
+                  <td className="px-3 py-2 text-center">{k.intent_transactionnel ? '✓' : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <button
+            onClick={handleConfirm}
+            disabled={envoi || selection.size === 0}
+            className="btn-primary flex-1 justify-center disabled:opacity-50"
+          >
+            {envoi ? <Spinner size="sm" /> : `Confirmer (${selection.size} keywords)`}
+          </button>
+          <button onClick={onClose} className="btn-secondary">Annuler</button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ─── Modale validation Bloc 7 — Concurrents ──────────────────────────────────
+
+function ModalValidationConcurrents({
+  concurrents,
+  haloscanSuggestions,
+  onConfirm,
+  onClose,
+}: {
+  concurrents: ConcurrentIdentifie[]
+  haloscanSuggestions: Array<{ root_domain: string; missed_keywords: number; total_traffic: number }>
+  onConfirm: (concurrentsValides: ConcurrentIdentifie[]) => void
+  onClose: () => void
+}) {
+  const [liste, setListe] = useState<ConcurrentIdentifie[]>(concurrents)
+  const [envoi, setEnvoi] = useState(false)
+
+  function supprimerConcurrent(index: number) {
+    setListe(prev => prev.filter((_, i) => i !== index))
+  }
+
+  function handleConfirm() {
+    if (liste.length === 0) return
+    setEnvoi(true)
+    onConfirm(liste)
+  }
+
+  return (
+    <Modal open={true} onClose={onClose} title="Validation — Concurrents identifiés" blocking>
+      <div className="space-y-4">
+        <p className="text-sm text-text-secondary">
+          Vérifiez la sélection des concurrents avant de lancer l&apos;analyse comparative.
+          Vous pouvez supprimer ceux qui ne sont pas pertinents.
+        </p>
+
+        {/* Tableau concurrents */}
+        <div className="border border-brand-border rounded-lg overflow-hidden">
+          <table className="w-full text-xs">
+            <thead className="bg-brand-bg border-b border-brand-border">
+              <tr>
+                <th className="px-3 py-2 text-left font-medium text-text-secondary">Destination</th>
+                <th className="px-3 py-2 text-left font-medium text-text-secondary">Type</th>
+                <th className="px-3 py-2 text-left font-medium text-text-secondary">Domaine</th>
+                <th className="px-3 py-2 text-right font-medium text-text-secondary"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-brand-border">
+              {liste.map((c, i) => (
+                <tr key={`${c.nom}-${i}`} className="hover:bg-gray-50">
+                  <td className="px-3 py-2">
+                    <div className="font-medium text-brand-navy">{c.nom}</div>
+                    <div className="text-text-muted text-[10px]">{c.departement}</div>
+                  </td>
+                  <td className="px-3 py-2 text-text-secondary">{c.type_destination}</td>
+                  <td className="px-3 py-2 font-mono text-text-secondary">
+                    {c.domaine_valide || c.domaine_ot}
+                    {c.confiance_domaine === 'incertain' && (
+                      <span className="ml-1 text-amber-600">?</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <button
+                      onClick={() => supprimerConcurrent(i)}
+                      className="text-red-500 hover:text-red-700 text-[10px] px-1.5 py-0.5 rounded border border-red-200 hover:bg-red-50 transition-colors"
+                    >
+                      Supprimer
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Suggestions Haloscan — concurrents SEO non proposés par OpenAI */}
+        {haloscanSuggestions.length > 0 && (
+          <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+            <p className="text-xs font-semibold text-blue-800 mb-2">
+              Concurrents SEO détectés par Haloscan (non proposés par l&apos;IA)
+            </p>
+            <div className="space-y-1">
+              {haloscanSuggestions.map(s => (
+                <div key={s.root_domain} className="flex items-center justify-between text-xs text-blue-700">
+                  <span className="font-mono">{s.root_domain}</span>
+                  <span className="text-[10px] text-blue-600">
+                    {s.missed_keywords.toLocaleString('fr-FR')} keywords manqués
+                    {' · '}{s.total_traffic.toLocaleString('fr-FR')} visites/mois
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p className="text-[10px] text-blue-600 mt-2 italic">
+              Ces sites ne seront pas inclus dans l&apos;analyse comparative à moins d&apos;être ajoutés manuellement.
+            </p>
+          </div>
+        )}
+
+        <div className="flex gap-3 pt-2">
+          <button
+            onClick={handleConfirm}
+            disabled={envoi || liste.length === 0}
+            className="btn-primary flex-1 justify-center disabled:opacity-50"
+          >
+            {envoi ? <Spinner size="sm" /> : `Confirmer (${liste.length} concurrent${liste.length > 1 ? 's' : ''})`}
+          </button>
+          <button onClick={onClose} className="btn-secondary">Annuler</button>
+        </div>
+      </div>
+    </Modal>
+  )
 }
 
 // ─── Page principale ─────────────────────────────────────────────────────────
@@ -252,26 +623,44 @@ export default function ProgressionPage() {
   const [blocs, setBlocs] = useState<BlocStatut[]>(
     BLOCS_CONFIG.map(b => ({ ...b, statut: 'en_attente' }))
   )
+  const [logs, setLogs] = useState<LogEntry[]>([])
+  const [logsOuverts, setLogsOuverts] = useState(false)
   const [validationBloc, setValidationBloc] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [segmentALance, setSegmentALance] = useState(false)
+
+  // Ref pour éviter de lancer le Segment A deux fois (StrictMode double render)
+  const segmentALanceRef = useRef(false)
 
   // ── Calcul des blocs depuis resultats JSONB ──
   function extraireBlocs(resultats: AuditData['resultats'], coutsApi: AuditData['couts_api']): BlocStatut[] {
+    if (!resultats) return BLOCS_CONFIG.map(b => ({ ...b, statut: 'en_attente' }))
+
+    // Lire les blocs_statuts si disponibles (source de vérité de l'orchestrateur)
+    const blocsStatuts = resultats.blocs_statuts as Record<string, StatutBloc> | undefined
+
     return BLOCS_CONFIG.map((cfg, i) => {
-      const blocKey = cfg.id
-      const data = resultats?.[blocKey]
-      const coutBlocKey = `bloc${i + 1}`
+      const coutBlocKey = BLOC_ID_TO_COUTS_KEY[cfg.id] ?? `bloc${i + 1}`
       const coutData = coutsApi?.[coutBlocKey]
       const cout = coutData?.total ?? coutData?.total_bloc ?? undefined
 
       let statut: StatutBloc = 'en_attente'
-      if (data) {
-        if ((data as { statut?: string }).statut === 'en_attente_validation') {
-          statut = 'en_attente_validation'
-        } else if ((data as { erreur?: unknown }).erreur) {
-          statut = 'erreur'
-        } else {
-          statut = 'termine'
+
+      if (blocsStatuts) {
+        // Utiliser blocs_statuts — source de vérité de l'orchestrateur
+        const cle = `bloc${i + 1}` as keyof typeof blocsStatuts
+        statut = (blocsStatuts[cle] as StatutBloc) ?? 'en_attente'
+      } else {
+        // Fallback : déduire depuis resultats (compatibilité ancienne logique)
+        const data = resultats[cfg.id]
+        if (data) {
+          if ((data as { statut?: string }).statut === 'en_attente_validation') {
+            statut = 'en_attente_validation'
+          } else if ((data as { erreur?: unknown }).erreur) {
+            statut = 'erreur'
+          } else {
+            statut = 'termine'
+          }
         }
       }
 
@@ -327,13 +716,117 @@ export default function ProgressionPage() {
     }
   }, [id])
 
+  // ── Supabase Realtime — écoute des logs d'audit ──
+  useEffect(() => {
+    const channel = supabase
+      .channel(`logs-${id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'audit_logs',
+          filter: `audit_id=eq.${id}`,
+        },
+        (payload) => {
+          const newLog = payload.new as LogEntry
+          setLogs(prev => [...prev, newLog])
+
+          // Ouvrir automatiquement le panneau si une erreur apparaît
+          if (newLog.niveau === 'error') {
+            setLogsOuverts(true)
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [id])
+
+  // ── Déclenchement automatique Segment A ──
+  useEffect(() => {
+    if (!audit || loading || segmentALanceRef.current) return
+
+    const blocsStatuts = audit.resultats?.blocs_statuts as Record<string, string> | undefined
+    const tousEnAttente = !blocsStatuts || Object.values(blocsStatuts).every(s => s === 'en_attente')
+    const doitLancer = audit.statut === 'en_cours' && tousEnAttente
+
+    if (doitLancer) {
+      segmentALanceRef.current = true
+      setSegmentALance(true)
+
+      fetch(`/api/orchestrateur/segment-a`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audit_id: id }),
+      }).catch(err => {
+        console.error('[progression] Erreur lancement Segment A :', err)
+        segmentALanceRef.current = false
+        setSegmentALance(false)
+      })
+    }
+  }, [audit, loading, id])
+
+  // ── Ouverture automatique de la modale de validation ──
+  useEffect(() => {
+    const blocValidation = blocs.find(b => b.statut === 'en_attente_validation')
+    if (blocValidation && validationBloc === null) {
+      // Délai court pour laisser l'UI se mettre à jour visuellement
+      const timer = setTimeout(() => setValidationBloc(blocValidation.id), 400)
+      return () => clearTimeout(timer)
+    }
+  }, [blocs])
+
+  // ── Confirmation keywords → déclenche Segment B ──
+  async function handleConfirmKeywords(keywordsValides: KeywordClassifie[]) {
+    setValidationBloc(null)
+
+    fetch(`/api/orchestrateur/segment-b`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audit_id: id, keywords_valides: keywordsValides }),
+    }).catch(err => console.error('[progression] Erreur lancement Segment B :', err))
+  }
+
+  // ── Confirmation concurrents → déclenche Segment C ──
+  async function handleConfirmConcurrents(concurrentsValides: ConcurrentIdentifie[]) {
+    setValidationBloc(null)
+
+    fetch(`/api/orchestrateur/segment-c`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audit_id: id, concurrents_valides: concurrentsValides }),
+    }).catch(err => console.error('[progression] Erreur lancement Segment C :', err))
+  }
+
   // ── Métriques ──
   const nbTermines = blocs.filter(b => b.statut === 'termine').length
   const progression = nbTermines
-  const toutTermine = blocs.every(b => b.statut === 'termine')
+  const toutTermine = audit?.statut === 'termine' || blocs.every(b => b.statut === 'termine')
   const blocEnAttenteValidation = blocs.find(b => b.statut === 'en_attente_validation')
-
   const coutCumule = blocs.reduce((sum, b) => sum + (b.cout || 0), 0)
+
+  // ── Données pour les modales ──
+  const resultats = audit?.resultats ?? {}
+  const blocsStatuts = (resultats.blocs_statuts ?? {}) as Record<string, StatutBloc>
+
+  // Keywords Phase A pour la modale Bloc 4
+  const visibiliteSEO = resultats.visibilite_seo as {
+    phase_a?: { keywords_classes?: KeywordClassifie[] }
+  } | undefined
+  const keywordsPhaseA = visibiliteSEO?.phase_a?.keywords_classes ?? []
+
+  // Concurrents Phase A pour la modale Bloc 7
+  const concurrentsData = resultats.concurrents as {
+    phase_a?: {
+      concurrents?: ConcurrentIdentifie[]
+      haloscan_suggestions?: Array<{ root_domain: string; missed_keywords: number; total_traffic: number }>
+    }
+  } | undefined
+  const concurrentsPhaseA = concurrentsData?.phase_a?.concurrents ?? []
+  const haloscanSuggestions = concurrentsData?.phase_a?.haloscan_suggestions ?? []
 
   if (loading) {
     return (
@@ -358,6 +851,9 @@ export default function ProgressionPage() {
         </h1>
         <p className="text-text-secondary text-sm mt-1">
           Progression de l&apos;analyse digitale
+          {segmentALance && !toutTermine && (
+            <span className="ml-2 text-xs text-status-info">• Analyse en cours</span>
+          )}
         </p>
       </div>
 
@@ -407,7 +903,7 @@ export default function ProgressionPage() {
               <p className="font-medium text-brand-navy text-sm truncate">{bloc.label}</p>
             </div>
 
-            {/* Coût — icône i avec tooltip */}
+            {/* Coût */}
             {bloc.cout && <CoutTooltip cout={bloc.cout} />}
 
             {/* Badge statut */}
@@ -444,7 +940,7 @@ export default function ProgressionPage() {
 
       {/* Bouton résultats si terminé */}
       {toutTermine && (
-        <div className="text-center animate-fade-in">
+        <div className="text-center animate-fade-in mb-6">
           <button
             onClick={() => router.push(`/audit/${id}/resultats`)}
             className="btn-primary text-base px-8 py-3"
@@ -454,40 +950,33 @@ export default function ProgressionPage() {
         </div>
       )}
 
-      {/* Modale validation (placeholder Phase 3B) */}
-      {validationBloc && VALIDATION_CONFIG[validationBloc] && (
-        <Modal
-          open={true}
+      {/* Panneau Logs */}
+      <PanneauLogs
+        logs={logs}
+        ouvert={logsOuverts}
+        onToggle={() => setLogsOuverts(prev => !prev)}
+        nomDestination={audit?.destinations?.nom ?? ''}
+        blocsStatuts={blocsStatuts}
+        statutAudit={audit?.statut ?? ''}
+      />
+
+      {/* Modale validation Bloc 4 — Keywords Phase B */}
+      {validationBloc === 'visibilite_seo' && keywordsPhaseA.length > 0 && (
+        <ModalValidationKeywords
+          keywords={keywordsPhaseA}
+          onConfirm={handleConfirmKeywords}
           onClose={() => setValidationBloc(null)}
-          title={VALIDATION_CONFIG[validationBloc].titre}
-          blocking
-        >
-          <div className="space-y-4">
-            <p className="text-sm text-text-secondary">
-              {VALIDATION_CONFIG[validationBloc].description}
-            </p>
-            <div className="p-4 bg-brand-bg rounded-lg border border-brand-border">
-              <p className="text-xs text-text-muted italic">
-                La logique de validation détaillée sera implémentée en Phase 3B.
-                Pour l&apos;instant, cliquez sur &quot;Valider&quot; pour continuer.
-              </p>
-            </div>
-            <div className="flex gap-3 pt-2">
-              <button
-                onClick={() => setValidationBloc(null)}
-                className="btn-primary flex-1 justify-center"
-              >
-                Valider et continuer
-              </button>
-              <button
-                onClick={() => setValidationBloc(null)}
-                className="btn-secondary"
-              >
-                Fermer
-              </button>
-            </div>
-          </div>
-        </Modal>
+        />
+      )}
+
+      {/* Modale validation Bloc 7 — Concurrents */}
+      {validationBloc === 'concurrents' && concurrentsPhaseA.length > 0 && (
+        <ModalValidationConcurrents
+          concurrents={concurrentsPhaseA}
+          haloscanSuggestions={haloscanSuggestions}
+          onConfirm={handleConfirmConcurrents}
+          onClose={() => setValidationBloc(null)}
+        />
       )}
     </div>
   )
