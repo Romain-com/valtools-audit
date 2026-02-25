@@ -169,7 +169,7 @@ export async function lancerBlocSchemaDigital(
 
     // 3 appels OpenAI : classification + analyse OT (si domaine_ot) + synthèse finale
     const nbAppelsOpenAI = domaine_ot ? 3 : 2
-    const coutOpenAI = nbAppelsOpenAI * API_COSTS.openai_gpt4o_mini
+    const coutOpenAI = nbAppelsOpenAI * API_COSTS.openai_gpt5_mini
     const coutDataForSEO = 5 * API_COSTS.dataforseo_serp
 
     const couts = {
@@ -190,7 +190,7 @@ export async function lancerBlocSchemaDigital(
       },
       openai: {
         nb_appels: nbAppelsOpenAI,
-        cout_unitaire: API_COSTS.openai_gpt4o_mini,
+        cout_unitaire: API_COSTS.openai_gpt5_mini,
         cout_total: coutOpenAI,
       },
       pagespeed: {

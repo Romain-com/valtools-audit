@@ -95,14 +95,14 @@ export async function lancerPhaseB(
       },
       openai: {
         nb_appels: couts_phase_a.openai.nb_appels + 1,
-        cout: (couts_phase_a.openai.nb_appels + 1) * API_COSTS.openai_gpt4o_mini,
+        cout: (couts_phase_a.openai.nb_appels + 1) * API_COSTS.openai_gpt5_mini,
       },
       total:
         couts_phase_a.haloscan_market.cout +
         couts_phase_a.dataforseo_related.cout +
         couts_phase_a.dataforseo_ranked.cout +
         nb_appels_serp * API_COSTS.dataforseo_serp +
-        (couts_phase_a.openai.nb_appels + 1) * API_COSTS.openai_gpt4o_mini,
+        (couts_phase_a.openai.nb_appels + 1) * API_COSTS.openai_gpt5_mini,
     }
 
     // ─── Étape 4 : persistance des coûts Phase B (fire & forget) ──────────────

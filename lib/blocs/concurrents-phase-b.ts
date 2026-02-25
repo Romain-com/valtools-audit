@@ -106,7 +106,7 @@ export async function lancerPhaseBConcurrents(
     dataforseo_ranked: coutsPhaseA.dataforseo_ranked,
     dataforseo_maps: coutsPhaseA.dataforseo_maps,
     dataforseo_serp_validation: coutsPhaseA.dataforseo_serp_validation,
-    openai_synthese: API_COSTS.openai_gpt4o_mini,
+    openai_synthese: API_COSTS.openai_gpt5_mini,
     total_bloc:
       coutsPhaseA.openai_identification +
       coutsPhaseA.haloscan +
@@ -115,7 +115,7 @@ export async function lancerPhaseBConcurrents(
       coutsPhaseA.dataforseo_ranked +
       coutsPhaseA.dataforseo_maps +
       coutsPhaseA.dataforseo_serp_validation +
-      API_COSTS.openai_gpt4o_mini,
+      API_COSTS.openai_gpt5_mini,
   }
 
   // ─── Tracking des coûts finaux (fire & forget) ────────────────────────────────

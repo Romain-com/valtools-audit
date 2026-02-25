@@ -15,7 +15,7 @@ import type {
 const OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
 
 // Paramètres du modèle
-const MODELE = 'gpt-4o-mini'
+const MODELE = 'gpt-5-mini'
 const TEMPERATURE = 0.2
 const MAX_TOKENS = 400
 
@@ -139,7 +139,7 @@ export async function POST(request: NextRequest) {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
-        // Timeout raisonnable pour gpt-4o-mini
+        // Timeout raisonnable pour gpt-5-mini
         timeout: 30_000,
       }
     )

@@ -152,7 +152,7 @@ Retourne UNIQUEMENT ce JSON valide (sans markdown, sans commentaires) :
     const response = await axios.post(
       OPENAI_URL,
       {
-        model: 'gpt-4o-mini',
+        model: 'gpt-5-mini',
         messages: [
           { role: 'system', content: 'Tu es expert SEO touristique. Tu réponds uniquement en JSON valide. Tu choisis les opportunités UNIQUEMENT parmi la liste fournie.' },
           { role: 'user', content: prompt },
@@ -185,8 +185,8 @@ Retourne UNIQUEMENT ce JSON valide (sans markdown, sans commentaires) :
       ...resultat,
       cout: {
         nb_appels: 1,
-        cout_unitaire: API_COSTS.openai_gpt4o_mini,
-        cout_total: API_COSTS.openai_gpt4o_mini,
+        cout_unitaire: API_COSTS.openai_gpt5_mini,
+        cout_total: API_COSTS.openai_gpt5_mini,
       },
     })
   } catch (err) {
@@ -216,8 +216,8 @@ Retourne UNIQUEMENT ce JSON valide (sans markdown, sans commentaires) :
       statut: 'terminé',
       cout: {
         nb_appels: 1,
-        cout_unitaire: API_COSTS.openai_gpt4o_mini,
-        cout_total: API_COSTS.openai_gpt4o_mini,
+        cout_unitaire: API_COSTS.openai_gpt5_mini,
+        cout_total: API_COSTS.openai_gpt5_mini,
       },
     })
   }

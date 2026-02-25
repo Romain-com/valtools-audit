@@ -28,7 +28,7 @@ Outil interne d'audit du potentiel de transformation digitale d'une destination 
 4. **Chaque phase de développement est rangée dans une section dédiée** — ne jamais mélanger le code de plusieurs phases.
 5. **Tester chaque module indépendamment** avant de passer au suivant.
 6. **À chaque fin de phase** : mettre à jour CONTEXT.md + push GitHub.
-7. **Économiser les tokens OpenAI** : requêtes courtes, JSON structuré, modèle `gpt-4o-mini` uniquement.
+7. **Économiser les tokens OpenAI** : requêtes courtes, JSON structuré, modèle `gpt-5-mini` uniquement.
 8. **Toujours prévoir un fallback** sur chaque appel API — une erreur ne doit jamais bloquer tout l'audit.
 
 ---
@@ -80,7 +80,7 @@ OPENAI_API_KEY=sk-proj-V2iayBm71Rm...
 ```
 ```
 POST https://api.openai.com/v1/chat/completions
-{ "model": "gpt-4o-mini", "temperature": 0.2, "max_tokens": 300 }
+{ "model": "gpt-5-mini", "temperature": 0.2, "max_tokens": 300 }
 ```
 ⚠️ Toujours demander du JSON pur dans le prompt : "Réponds UNIQUEMENT avec un JSON valide (sans markdown, sans commentaires)".
 ⚠️ Parser systématiquement : `JSON.parse(raw.replace(/```json\n?|```/g, '').trim())`

@@ -73,7 +73,7 @@ Retourne UNIQUEMENT un JSON valide (max 3 points_forts et 3 points_faibles) :
     const reponse = await axios.post(
       OPENAI_URL,
       {
-        model: 'gpt-4o-mini',
+        model: 'gpt-5-mini',
         messages: [
           {
             role: 'system',

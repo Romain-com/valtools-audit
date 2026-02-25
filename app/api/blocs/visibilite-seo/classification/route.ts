@@ -132,7 +132,7 @@ Réponds UNIQUEMENT avec un JSON valide (sans markdown, sans commentaires) :
   const response = await axios.post(
     OPENAI_URL,
     {
-      model: 'gpt-4o-mini',
+      model: 'gpt-5-mini',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: prompt },
@@ -223,8 +223,8 @@ export async function POST(request: NextRequest) {
     keywords_classes,
     cout: {
       nb_appels: nb_appels_openai,
-      cout_unitaire: API_COSTS.openai_gpt4o_mini,
-      cout_total: nb_appels_openai * API_COSTS.openai_gpt4o_mini,
+      cout_unitaire: API_COSTS.openai_gpt5_mini,
+      cout_total: nb_appels_openai * API_COSTS.openai_gpt5_mini,
     },
   })
 }

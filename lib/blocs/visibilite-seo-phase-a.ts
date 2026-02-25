@@ -176,13 +176,13 @@ export async function lancerPhaseA(
       },
       openai: {
         nb_appels: nb_appels_openai,
-        cout: nb_appels_openai * API_COSTS.openai_gpt4o_mini,
+        cout: nb_appels_openai * API_COSTS.openai_gpt5_mini,
       },
       total:
         8 * API_COSTS.haloscan_keywords +
         nb_appels_related * API_COSTS.dataforseo_related +
         API_COSTS.dataforseo_ranked +
-        nb_appels_openai * API_COSTS.openai_gpt4o_mini,
+        nb_appels_openai * API_COSTS.openai_gpt5_mini,
     }
 
     // ─── Étape 6 : persistance des coûts (fire & forget) ─────────────────────

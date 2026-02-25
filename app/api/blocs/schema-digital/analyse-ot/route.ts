@@ -60,7 +60,7 @@ JSON attendu :
     const response = await axios.post(
       OPENAI_URL,
       {
-        model: 'gpt-4o-mini',
+        model: 'gpt-5-mini',
         messages: [
           {
             role: 'system',
@@ -88,8 +88,8 @@ JSON attendu :
       ...parsed,
       cout: {
         nb_appels: 1,
-        cout_unitaire: API_COSTS.openai_gpt4o_mini,
-        cout_total: API_COSTS.openai_gpt4o_mini,
+        cout_unitaire: API_COSTS.openai_gpt5_mini,
+        cout_total: API_COSTS.openai_gpt5_mini,
       },
     })
   } catch (err) {
@@ -109,8 +109,8 @@ JSON attendu :
       erreur: err instanceof Error ? err.message : 'Erreur inconnue',
       cout: {
         nb_appels: 1,
-        cout_unitaire: API_COSTS.openai_gpt4o_mini,
-        cout_total: API_COSTS.openai_gpt4o_mini,
+        cout_unitaire: API_COSTS.openai_gpt5_mini,
+        cout_total: API_COSTS.openai_gpt5_mini,
       },
     })
   }

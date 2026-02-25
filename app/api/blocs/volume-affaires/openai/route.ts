@@ -70,7 +70,7 @@ Réponds avec ce JSON exact :
     const reponse = await axios.post(
       OPENAI_URL,
       {
-        model: 'gpt-4o-mini',
+        model: 'gpt-5-mini',
         messages: [
           {
             role: 'system',

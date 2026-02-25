@@ -376,7 +376,7 @@ export async function lancerPhaseAConcurrents(
   // ─── Tracking des coûts (fire & forget) ──────────────────────────────────────
 
   const couts = {
-    openai_identification: API_COSTS.openai_gpt4o_mini,
+    openai_identification: API_COSTS.openai_gpt5_mini,
     haloscan: nb_appels_haloscan * API_COSTS.haloscan,
     haloscan_positions: nb_appels_haloscan_positions * API_COSTS.haloscan_positions,
     haloscan_competitors: nb_appels_haloscan_competitors * API_COSTS.haloscan_site_competitors,

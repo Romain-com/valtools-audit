@@ -78,7 +78,7 @@ Réponds avec ce JSON exact :
     const response = await axios.post<OpenAIResponse>(
       OPENAI_URL,
       {
-        model: 'gpt-4o-mini',
+        model: 'gpt-5-mini',
         messages: [
           {
             role: 'system',
@@ -109,7 +109,7 @@ Réponds avec ce JSON exact :
         raison: 'Sélection par défaut (erreur OpenAI)',
       })),
       cout: {
-        openai: { nb_appels: 1, cout_unitaire: API_COSTS.openai_gpt4o_mini, cout_total: API_COSTS.openai_gpt4o_mini },
+        openai: { nb_appels: 1, cout_unitaire: API_COSTS.openai_gpt5_mini, cout_total: API_COSTS.openai_gpt5_mini },
       },
     })
   }
@@ -124,8 +124,8 @@ Réponds avec ce JSON exact :
       cout: {
         openai: {
           nb_appels: 1,
-          cout_unitaire: API_COSTS.openai_gpt4o_mini,
-          cout_total: API_COSTS.openai_gpt4o_mini,
+          cout_unitaire: API_COSTS.openai_gpt5_mini,
+          cout_total: API_COSTS.openai_gpt5_mini,
         },
       },
     }
@@ -140,7 +140,7 @@ Réponds avec ce JSON exact :
         raison: 'Sélection par défaut (parsing échoué)',
       })),
       cout: {
-        openai: { nb_appels: 1, cout_unitaire: API_COSTS.openai_gpt4o_mini, cout_total: API_COSTS.openai_gpt4o_mini },
+        openai: { nb_appels: 1, cout_unitaire: API_COSTS.openai_gpt5_mini, cout_total: API_COSTS.openai_gpt5_mini },
       },
     })
   }

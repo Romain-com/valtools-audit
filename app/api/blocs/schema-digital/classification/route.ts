@@ -127,7 +127,7 @@ Réponds avec ce JSON exact :
     const response = await axios.post(
       OPENAI_URL,
       {
-        model: 'gpt-4o-mini',
+        model: 'gpt-5-mini',
         messages: [
           {
             role: 'system',

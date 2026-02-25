@@ -1,5 +1,5 @@
 # CONTEXT.MD — Destination Digital Audit App
-> Dernière mise à jour : Phase 2 — Bloc 7 Concurrents v2 ✅ (2026-02-25)
+> Dernière mise à jour : Migration OpenAI gpt-5-mini ✅ (2026-02-25)
 > Destination de test de référence : **Annecy** | Domaine OT : `lac-annecy.com`
 
 ---
@@ -102,10 +102,10 @@ Payload: { "keyword": "Office de tourisme Annecy", "language_code": "fr", "locat
 ```
 OPENAI_API_KEY=sk-proj-V2iayBm71Rm...
 ```
-**Modèle** : `gpt-4o-mini` (économie de tokens)
+**Modèle** : `gpt-5-mini` (économie de tokens)
 ```
 POST https://api.openai.com/v1/chat/completions
-{ "model": "gpt-4o-mini", "temperature": 0.2, "max_tokens": 300 }
+{ "model": "gpt-5-mini", "temperature": 0.2, "max_tokens": 300 }
 ```
 - Toujours demander JSON pur : "Réponds UNIQUEMENT avec un JSON valide (sans markdown, sans commentaires)"
 - Parser systématiquement : `JSON.parse(raw.replace(/```json\n?|```/g, '').trim())`
@@ -276,7 +276,7 @@ PAGESPEED_API_KEY=AIza...
 | Bloc d'analyse | Source | Statut |
 |---|---|---|
 | Identification commune + SIREN | Microservice CSV locaux | ✅ |
-| Positionnement marketing | OpenAI gpt-4o-mini | ✅ |
+| Positionnement marketing | OpenAI gpt-5-mini | ✅ |
 | Note Google destination + OT | DataForSEO Maps | ✅ |
 | Taxe de séjour | data.economie.gouv.fr | ✅ |
 | Schéma digital (sites officiels) | DataForSEO SERP | ✅ |
@@ -492,9 +492,9 @@ cd microservice && npm run dev
 app/api/blocs/positionnement/
 ├── maps/route.ts          → DataForSEO Maps (4 appels : OT + 3 POI)
 ├── instagram/route.ts     → Apify (hashtag-stats + hashtag-scraper)
-├── openai/route.ts        → GPT-4o-mini (analyse positionnement)
+├── openai/route.ts        → GPT-5-mini (analyse positionnement)
 ├── poi/route.ts           → Microservice DATA Tourisme (POI bruts)
-└── poi-selection/route.ts → GPT-4o-mini (sélection 3 POI pertinents)
+└── poi-selection/route.ts → GPT-5-mini (sélection 3 POI pertinents)
 
 lib/
 ├── api-costs.ts           → Tarifs unitaires (source de vérité unique)
@@ -512,7 +512,7 @@ types/positionnement.ts    → Types complets du bloc
      POST /maps           → DataForSEO (OT + 3 POI séquentiels)
      POST /instagram      → Apify (hashtag-stats + scraper)
    ])
-4. POST /openai           → GPT-4o-mini (analyse finale)
+4. POST /openai           → GPT-5-mini (analyse finale)
 5. enregistrerCoutsBloc() → Supabase fire & forget
 ```
 
@@ -544,7 +544,7 @@ const API_COSTS = {
   dataforseo_maps: 0.006,       // 4 appels = 0.024 €
   apify_hashtag_stats: 0.05,    // 1 run = 0.05 €
   apify_hashtag_scraper: 0.05,  // 1 run = 0.05 €
-  openai_gpt4o_mini: 0.001,     // 2 appels = 0.002 €
+  openai_gpt5_mini: 0.003,      // 2 appels = 0.006 €
 }                               // Total bloc ≈ 0.108 €
 ```
 
@@ -559,7 +559,7 @@ app/api/blocs/volume-affaires/
 ├── epci-communes/route.ts  → Proxy microservice → communes d'un EPCI (NOUVEAU)
 ├── taxe/route.ts           → data.economie.gouv.fr (communes + groupements)
 ├── melodi/route.ts         → API Mélodi INSEE (RP 2022 + BPE D7) + OpenAI coefficients (NOUVEAU)
-└── openai/route.ts         → GPT-4o-mini (synthèse + indicateurs + part commune)
+└── openai/route.ts         → GPT-5-mini (synthèse + indicateurs + part commune)
 
 lib/blocs/volume-affaires.ts        → Orchestrateur du bloc (+ étape Mélodi + dispatch)
 types/volume-affaires.ts            → DonneesCollecteur + ResultatVolumeAffaires
@@ -612,7 +612,7 @@ types/volume-affaires.ts            → DonneesCollecteur + ResultatVolumeAffair
 **Coût du bloc** :
 ```
 data.economie.gouv.fr : gratuit
-OpenAI gpt-4o-mini   : 1 appel = 0.001 €
+OpenAI gpt-5-mini    : 1 appel = 0.003 €
 Total bloc           : 0.001 €
 ```
 
@@ -676,12 +676,12 @@ TOTAL Bloc 2 après enrichissement : 0.002€
 ```
 app/api/blocs/schema-digital/
 ├── serp/route.ts              → DataForSEO SERP (5 requêtes parallèles, fusion + dédup par domaine)
-├── classification/route.ts    → GPT-4o-mini (catégorisation SERP + visibilite_ot_par_intention)
+├── classification/route.ts    → GPT-5-mini (catégorisation SERP + visibilite_ot_par_intention)
 ├── haloscan/route.ts          → Haloscan — UN domaine par appel, retourne { donnees_valides, resultat }
 ├── domain-analytics/route.ts  → DataForSEO domain_rank_overview — fallback si Haloscan vide
 ├── pagespeed/route.ts         → Google PageSpeed (mobile + desktop en parallèle par domaine)
-├── analyse-ot/route.ts        → GPT-4o-mini (fonctionnalités + maturité digitale site OT)
-└── openai/route.ts            → GPT-4o-mini (synthèse schéma digital)
+├── analyse-ot/route.ts        → GPT-5-mini (fonctionnalités + maturité digitale site OT)
+└── openai/route.ts            → GPT-5-mini (synthèse schéma digital)
 
 lib/blocs/schema-digital.ts   → Orchestrateur du bloc
 types/schema-digital.ts        → CategorieResultatSERP + ResultatHaloscan (avec source) + tous les types
@@ -1009,7 +1009,7 @@ microservice/routes/scan-types.ts            → GET /scan-types?code_insee=XXX 
 app/api/blocs/stocks-physiques/
 ├── datatourisme/route.ts  → proxy microservice /stocks
 ├── sirene/route.ts        → recherche-entreprises.api.gouv.fr (sans auth)
-└── synthese/route.ts      → GPT-4o-mini
+└── synthese/route.ts      → GPT-5-mini
 
 lib/blocs/stocks-physiques.ts  → orchestrateur (Promise.allSettled + déduplication Levenshtein)
 types/stocks-physiques.ts       → tous les types TypeScript du bloc
@@ -1076,7 +1076,7 @@ Couverture DT globale : 3% | Ratio particuliers hébergement : 56.2% | OpenAI sy
 ```
 DATA Tourisme (local)          : gratuit
 Recherche Entreprises (open)   : gratuit
-OpenAI gpt-4o-mini (1 appel)   : 0.001€
+OpenAI gpt-5-mini (1 appel)    : 0.003€
 TOTAL                          : 0.001€
 ```
 
@@ -1158,7 +1158,7 @@ Durée : 143s | Coût : 0.001€ (OpenAI uniquement)
 ```
 Playwright (Chromium)  : gratuit (local)
 Airbnb/Booking/Viator  : gratuit (risque CGU — usage interne uniquement)
-OpenAI gpt-4o-mini     : 0.001€
+OpenAI gpt-5-mini      : 0.003€
 TOTAL                  : 0.001€
 ```
 
@@ -1296,6 +1296,25 @@ DataForSEO SERP validation (0-5 appels)     : 0-0.030€
 OpenAI synthèse (1 appel)                   : 0.001€
 TOTAL cas typique (Annecy)                  : 0.143€
 ```
+
+#### Migration OpenAI : gpt-4o-mini → gpt-5-mini ✅ (2026-02-25)
+
+**Périmètre** : tous les appels OpenAI des blocs 1 à 7 (14 fichiers route.ts + lib/blocs/*.ts).
+
+**Model string** : `gpt-5-mini` (modèle le plus économique de la famille GPT-5)
+
+**Tarification** :
+| Modèle | Input | Output | Coût estimé/appel |
+|---|---|---|---|
+| gpt-4o-mini (ancien) | $0.15/1M tokens | $0.60/1M tokens | ~0.001€ |
+| **gpt-5-mini** | $0.25/1M tokens | **$2.00/1M tokens** | ~0.003€ |
+
+⚠️ Output 3.3× plus cher — budget OpenAI par audit passe de ~0.01-0.02€ à ~0.03-0.06€.
+
+**Fichiers modifiés** :
+- `lib/api-costs.ts` : clé renommée `openai_gpt5_mini`, valeur `0.001` → `0.003`
+- Toutes les références `openai_gpt4o_mini` dans les orchestrateurs lib/blocs/*.ts → `openai_gpt5_mini`
+- `.claude/CLAUDE.md` : 2 occurrences mises à jour
 
 ---
 

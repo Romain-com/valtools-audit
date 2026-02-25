@@ -95,13 +95,13 @@ export async function auditPositionnement(
     },
     openai: {
       nb_appels: 2,
-      cout_unitaire: API_COSTS.openai_gpt4o_mini,
-      cout_total: 2 * API_COSTS.openai_gpt4o_mini,
+      cout_unitaire: API_COSTS.openai_gpt5_mini,
+      cout_total: 2 * API_COSTS.openai_gpt5_mini,
     },
     total_bloc:
       4 * API_COSTS.dataforseo_maps +
       2 * API_COSTS.apify_hashtag_stats +
-      2 * API_COSTS.openai_gpt4o_mini,
+      2 * API_COSTS.openai_gpt5_mini,
   }
 
   // ─── Étape 6 : persistance des coûts (sans await — fire & forget) ────────

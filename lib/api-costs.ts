@@ -9,7 +9,7 @@ export const API_COSTS = {
   dataforseo_ranked: 0.006,     // par appel ranked_keywords/live (Bloc 4)
   apify_hashtag_stats: 0.05,    // par run instagram-hashtag-stats
   apify_hashtag_scraper: 0.05,  // par run instagram-hashtag-scraper
-  openai_gpt4o_mini: 0.001,     // par appel gpt-4o-mini (estimation)
+  openai_gpt5_mini: 0.003,      // par appel gpt-5-mini (estimation — output $2.00/1M tokens, ~3x gpt-4o-mini)
   haloscan: 0.01,               // par appel domains/overview (1 crédit)
   haloscan_keywords: 0.01,      // par appel keywords/overview (1 crédit)
   haloscan_positions: 0.01,     // par appel domains/positions (1 crédit site + export si résultats)

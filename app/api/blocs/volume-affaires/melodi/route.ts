@@ -229,7 +229,7 @@ Réponds UNIQUEMENT avec un JSON valide (sans markdown, sans commentaires) :
     const reponse = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model: 'gpt-4o-mini',
+        model: 'gpt-5-mini',
         messages: [
           {
             role: 'system',
