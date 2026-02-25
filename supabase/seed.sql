@@ -972,42 +972,9 @@ ON CONFLICT (id) DO UPDATE SET
   resultats  = EXCLUDED.resultats,
   couts_api  = EXCLUDED.couts_api;
 
--- ─── Competitors : les 5 concurrents d'Annecy ─────────────────────────────────
-
--- Supprimer les anciens concurrents de cet audit avant réinsertion
-DELETE FROM public.competitors WHERE audit_id = v_audit_id;
-
-INSERT INTO public.competitors (audit_id, nom, type, metriques) VALUES
-(
-  v_audit_id,
-  'Chamonix-Mont-Blanc',
-  'direct',
-  $m1${ "total_keywords": 70755, "total_traffic": 176206, "source_seo": "haloscan", "site_non_indexe": false, "note_google": 4.4, "nb_avis_google": 1866, "domaine_ot": "chamonix.com" }$m1$::jsonb
-),
-(
-  v_audit_id,
-  'Évian-les-Bains',
-  'direct',
-  $m2${ "total_keywords": 36, "total_traffic": 4, "source_seo": "haloscan", "site_non_indexe": false, "note_google": 4.3, "nb_avis_google": 749, "domaine_ot": "evian-tourisme.com" }$m2$::jsonb
-),
-(
-  v_audit_id,
-  'Aix-les-Bains',
-  'indirect',
-  $m3${ "total_keywords": 0, "total_traffic": 0, "source_seo": "inconnu", "site_non_indexe": true, "note_google": 4.3, "nb_avis_google": 553, "domaine_ot": "aixlesbains-rivieradesalpes.com" }$m3$::jsonb
-),
-(
-  v_audit_id,
-  'Saint-Gervais-les-Bains',
-  'direct',
-  $m4${ "total_keywords": 27788, "total_traffic": 40577, "source_seo": "haloscan", "site_non_indexe": false, "note_google": 4.3, "nb_avis_google": 361, "domaine_ot": "saintgervais.com" }$m4$::jsonb
-),
-(
-  v_audit_id,
-  'La Clusaz',
-  'direct',
-  $m5${ "total_keywords": 24322, "total_traffic": 1016314, "source_seo": "haloscan", "site_non_indexe": false, "note_google": 4.1, "nb_avis_google": 154, "domaine_ot": "laclusaz.com" }$m5$::jsonb
-);
+-- ─── Note : les concurrents sont dans audits.resultats.concurrents (JSONB) ─────
+-- La table competitors a été supprimée en migration 005.
+-- Les données concurrents sont déjà incluses dans le JSONB ci-dessus.
 
 RAISE NOTICE 'Seed Annecy inséré avec succès — destination: %, audit: %', v_destination_id, v_audit_id;
 
