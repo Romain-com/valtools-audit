@@ -44,6 +44,24 @@ const TYPES_CULTURE = new Set([
   'Beach', 'Marina', 'RiverPort', 'Canal',
 ])
 
+// Sous-ensembles pour classification fine de la culture
+const TYPES_CULTURE_RELIGIEUX = new Set([
+  'Church', 'ReligiousSite', 'Cathedral', 'Convent', 'Monastery',
+])
+const TYPES_CULTURE_MUSEES = new Set([
+  'Museum', 'schema:Museum', 'ArtGalleryOrExhibitionGallery',
+  'Library', 'schema:Library',
+])
+const TYPES_CULTURE_SPECTACLE = new Set([
+  'Theater', 'Cinema', 'schema:MovieTheater',
+])
+const TYPES_CULTURE_NATURE = new Set([
+  'NaturalHeritage', 'ParkAndGarden', 'schema:Park',
+  'Beach', 'Marina', 'RiverPort', 'Canal',
+])
+// patrimoine = tout le reste (Castle, RemarkableBuilding, CulturalSite, TechnicalHeritage,
+//   InterpretationCentre, CityHeritage, Palace, Bridge...)
+
 const TYPES_SERVICES = new Set([
   'TouristInformationCenter', 'schema:TouristInformationCenter',
   'LocalTouristOffice', 'IncomingTravelAgency',
@@ -59,6 +77,14 @@ function detecterSousCategHebergement(types: string[]): string {
   if (types.some(t => ['CollectiveAccommodation', 'HolidayResort'].includes(t))) return 'collectifs'
   if (types.some(t => ['RentalAccommodation', 'SelfCateringAccommodation'].includes(t))) return 'locations'
   return 'autres'
+}
+
+function detecterSousCategCulture(types: string[]): string {
+  if (types.some(t => TYPES_CULTURE_RELIGIEUX.has(t))) return 'religieux'
+  if (types.some(t => TYPES_CULTURE_MUSEES.has(t))) return 'musees_galeries'
+  if (types.some(t => TYPES_CULTURE_SPECTACLE.has(t))) return 'spectacle_vivant'
+  if (types.some(t => TYPES_CULTURE_NATURE.has(t))) return 'nature'
+  return 'patrimoine'
 }
 
 function detecterSousCategActivite(types: string[]): string {
@@ -101,7 +127,7 @@ function classerEtablissement(types: string[]): ClassificationResult | null {
   }
   // 4. Culture ?
   if (types.some(t => TYPES_CULTURE.has(t))) {
-    return { categorie: 'culture', sous_categorie: null }
+    return { categorie: 'culture', sous_categorie: detecterSousCategCulture(types) }
   }
   // 5. Service touristique ?
   if (types.some(t => TYPES_SERVICES.has(t))) {
@@ -203,7 +229,7 @@ router.get('/', async (req: Request, res: Response) => {
   const compteurs = {
     hebergements: { total: 0, hotels: 0, collectifs: 0, locations: 0, autres: 0 },
     activites: { total: 0, sports_loisirs: 0, visites_tours: 0, experiences: 0 },
-    culture: { total: 0 },
+    culture: { total: 0, patrimoine: 0, religieux: 0, musees_galeries: 0, spectacle_vivant: 0, nature: 0 },
     services: { total: 0, offices_tourisme: 0, agences: 0, location_materiel: 0, transport: 0 },
   }
 

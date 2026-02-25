@@ -11,14 +11,14 @@ import type {
   EtablissementDT,
   EtablissementSIRENESimplifie,
   StocksPhysiquesFinaux,
-  StocksParCategorie,
+  LigneDetail,
   SyntheseStocksPhysiques,
 } from '@/types/stocks-physiques'
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
 
-// Seuil de déduplication : score >= 3 → doublon confirmé
-const SEUIL_DOUBLON = 3
+// Seuil de déduplication : score >= 2 → doublon confirmé (abaissé depuis 3 pour réduire faux négatifs)
+const SEUIL_DOUBLON = 2
 
 // ─── Helpers d'appel HTTP ─────────────────────────────────────────────────────
 
@@ -78,6 +78,25 @@ function levenshtein(a: string, b: string): number {
   return dp[m][n]
 }
 
+// Mots courants à ignorer dans la comparaison (articles, prépositions, formes juridiques, générique secteur)
+const MOTS_VIDES = new Set([
+  'le', 'la', 'les', 'de', 'du', 'des', 'et', 'en', 'au', 'aux',
+  'un', 'une', 'sur', 'sous', 'par', 'pour',
+  'hotel', 'camping', 'gite', 'residence', 'auberge', 'chalet', 'villa',
+  'maison', 'chez', 'ste', 'saint', 'sainte',
+])
+
+function motsSignificatifs(nom: string): string[] {
+  return normaliserNom(nom)
+    .split(' ')
+    .filter(m => m.length > 2 && !MOTS_VIDES.has(m))
+}
+
+function intersectionMots(a: string[], b: string[]): number {
+  const setB = new Set(b)
+  return a.filter(m => setB.has(m)).length
+}
+
 // ─── Score de similarité DT ↔ SIRENE ─────────────────────────────────────────
 
 function scoreSimilarite(dt: EtablissementDT, sir: EtablissementSIRENESimplifie): number {
@@ -88,9 +107,20 @@ function scoreSimilarite(dt: EtablissementDT, sir: EtablissementSIRENESimplifie)
 
   if (nomDT === nomSIR) {
     score += 3
-  } else if (nomDT.includes(nomSIR) || nomSIR.includes(nomDT)) {
+  } else if (nomDT.length > 3 && nomSIR.length > 3 && (nomDT.includes(nomSIR) || nomSIR.includes(nomDT))) {
     score += 2
   } else if (levenshtein(nomDT, nomSIR) <= 3) {
+    score += 1
+  }
+
+  // Pivot mots significatifs communs — signal fort si ≥ 2 mots communs
+  const motsA = motsSignificatifs(nomDT)
+  const motsB = motsSignificatifs(nomSIR)
+  const intersection = intersectionMots(motsA, motsB)
+  if (intersection >= 2) {
+    score += 2
+  } else if (intersection === 1 && motsA.length <= 2) {
+    // Nom court avec 1 seul mot significatif — signal faible mais utile
     score += 1
   }
 
@@ -150,6 +180,67 @@ function deduplicerCategorie(
   return { dt_only, sir_only, deux_sources, total }
 }
 
+// ─── Comptage SIRENE par sous-catégorie NAF ───────────────────────────────────
+
+// Mapping NAF → sous-catégorie hébergement (avec et sans point)
+const NAF_SOUS_CAT_HEBERGEMENT: Record<string, string> = {
+  '55.10Z': 'hotels',            '5510Z': 'hotels',
+  '55.20Z': 'meubles_locations', '5520Z': 'meubles_locations',
+  '55.30Z': 'campings',          '5530Z': 'campings',
+  '55.90Z': 'autres',            '5590Z': 'autres',
+}
+
+// Mapping NAF → sous-catégorie activités
+const NAF_SOUS_CAT_ACTIVITES: Record<string, string> = {
+  '93.11Z': 'sports_loisirs', '9311Z': 'sports_loisirs',
+  '93.12Z': 'sports_loisirs', '9312Z': 'sports_loisirs',
+  '93.13Z': 'sports_loisirs', '9313Z': 'sports_loisirs',
+  '93.19Z': 'sports_loisirs', '9319Z': 'sports_loisirs',
+  '93.21Z': 'experiences',    '9321Z': 'experiences',
+  '93.29Z': 'experiences',    '9329Z': 'experiences',
+  '79.90Z': 'agences_activites', '7990Z': 'agences_activites',
+}
+
+// Mapping NAF → sous-catégorie culture
+const NAF_SOUS_CAT_CULTURE: Record<string, string> = {
+  '90.01Z': 'spectacle_vivant', '9001Z': 'spectacle_vivant',
+  '90.02Z': 'spectacle_vivant', '9002Z': 'spectacle_vivant',
+  '90.03A': 'spectacle_vivant', '9003A': 'spectacle_vivant',
+  '91.01Z': 'musees_galeries',  '9101Z': 'musees_galeries',
+  '91.02Z': 'musees_galeries',  '9102Z': 'musees_galeries',
+  '91.03Z': 'patrimoine',       '9103Z': 'patrimoine',
+  '91.04Z': 'nature',           '9104Z': 'nature',
+}
+
+// Mapping NAF → sous-catégorie services
+const NAF_SOUS_CAT_SERVICES: Record<string, string> = {
+  '79.11Z': 'agences_voyage', '7911Z': 'agences_voyage',
+  '79.12Z': 'agences_voyage', '7912Z': 'agences_voyage',
+  '79.90Z': 'agences_voyage', '7990Z': 'agences_voyage',
+}
+
+function compterParNAF(etabs: EtablissementSIRENESimplifie[], mapping: Record<string, string>): Record<string, number> {
+  const compteurs: Record<string, number> = {}
+  for (const etab of etabs) {
+    const souscat = mapping[etab.naf]
+    if (souscat) {
+      compteurs[souscat] = (compteurs[souscat] ?? 0) + 1
+    }
+  }
+  return compteurs
+}
+
+// ─── Helpers calcul ───────────────────────────────────────────────────────────
+
+function pct(volume: number, total: number): number {
+  if (total === 0) return 0
+  return Math.round((volume / total) * 1000) / 10
+}
+
+function ligne(volume: number, total: number): LigneDetail {
+  return { volume, pct: pct(volume, total) }
+}
+
 // ─── Fusion complète des deux sources ────────────────────────────────────────
 
 function fusionnerStocks(
@@ -189,19 +280,70 @@ function fusionnerStocks(
     sirene?.services.etablissements ?? []
   )
 
-  // Compteurs DT pour les sous-catégories
+  // Sous-catégories DT
   const dtH = dt?.hebergements ?? { total: 0, hotels: 0, collectifs: 0, locations: 0, autres: 0 }
   const dtA = dt?.activites ?? { total: 0, sports_loisirs: 0, visites_tours: 0, experiences: 0 }
+  const dtC = dt?.culture ?? { total: 0, patrimoine: 0, religieux: 0, musees_galeries: 0, spectacle_vivant: 0, nature: 0 }
   const dtS = dt?.services ?? { total: 0, offices_tourisme: 0, agences: 0, location_materiel: 0, transport: 0 }
 
-  const total = calcHebergements.total + calcActivites.total + calcCulture.total + calcServices.total
+  // Sous-catégories SIRENE (comptage par NAF)
+  const sirH = compterParNAF(sirene?.hebergements.etablissements ?? [], NAF_SOUS_CAT_HEBERGEMENT)
+  const sirA = compterParNAF(sirene?.activites.etablissements ?? [], NAF_SOUS_CAT_ACTIVITES)
+  const sirC = compterParNAF(sirene?.culture.etablissements ?? [], NAF_SOUS_CAT_CULTURE)
+  const sirS = compterParNAF(sirene?.services.etablissements ?? [], NAF_SOUS_CAT_SERVICES)
 
-  // Taux de couverture DATA Tourisme = % des établissements SIRENE trouvés dans DT
+  // Volumes combinés hébergements (DT + SIRENE, somme sans dédup fine par sous-cat)
+  const hH = dtH.hotels + (sirH.hotels ?? 0)
+  const hCampings = sirH.campings ?? 0
+  const hLocations = dtH.locations + (sirH.meubles_locations ?? 0)
+  const hCollectifs = dtH.collectifs
+  const hAutres = dtH.autres + (sirH.autres ?? 0)
+
+  // Volumes combinés activités
+  const aSports = dtA.sports_loisirs + (sirA.sports_loisirs ?? 0)
+  const aVisites = dtA.visites_tours
+  const aExp = dtA.experiences + (sirA.experiences ?? 0)
+  const aAgences = sirA.agences_activites ?? 0
+
+  // Volumes combinés culture
+  const cPatrimoine = dtC.patrimoine + (sirC.patrimoine ?? 0)
+  const cReligieux = dtC.religieux
+  const cMusees = dtC.musees_galeries + (sirC.musees_galeries ?? 0)
+  const cSpectacle = dtC.spectacle_vivant + (sirC.spectacle_vivant ?? 0)
+  const cNature = dtC.nature + (sirC.nature ?? 0)
+
+  // Volumes combinés services
+  const sOT = dtS.offices_tourisme
+  const sAgences = dtS.agences + (sirS.agences_voyage ?? 0)
+  const sLocation = dtS.location_materiel
+  const sTransport = dtS.transport
+
+  // Couverture DT par catégorie = doublons / total SIRENE de la catégorie
+  const couvH = (sirene?.hebergements.total ?? 0) > 0
+    ? Math.round((calcHebergements.deux_sources / sirene!.hebergements.total) * 100)
+    : (dt ? 100 : 0)
+  const couvA = (sirene?.activites.total ?? 0) > 0
+    ? Math.round((calcActivites.deux_sources / sirene!.activites.total) * 100)
+    : (dt ? 100 : 0)
+  const couvC = (sirene?.culture.total ?? 0) > 0
+    ? Math.round((calcCulture.deux_sources / sirene!.culture.total) * 100)
+    : (dt ? 100 : 0)
+  const couvS = (sirene?.services.total ?? 0) > 0
+    ? Math.round((calcServices.deux_sources / sirene!.services.total) * 100)
+    : (dt ? 100 : 0)
   const totalSirene = sirene?.total_global ?? 0
   const totalDoublons = calcHebergements.deux_sources + calcActivites.deux_sources + calcCulture.deux_sources + calcServices.deux_sources
-  const taux_couverture_dt = totalSirene > 0
+  const couvGlobal = totalSirene > 0
     ? Math.round((totalDoublons / totalSirene) * 100)
-    : dt ? 100 : 0
+    : (dt ? 100 : 0)
+
+  // Ratio particuliers hébergement = meublés NAF 55.20Z / total SIRENE hébergements
+  const sirHTotal = sirene?.hebergements.total ?? 0
+  const ratio_particuliers_hebergement = sirHTotal > 0
+    ? Math.round(((sirH.meubles_locations ?? 0) / sirHTotal) * 1000) / 10
+    : 0
+
+  const total = calcHebergements.total + calcActivites.total + calcCulture.total + calcServices.total
 
   return {
     hebergements: {
@@ -209,38 +351,60 @@ function fusionnerStocks(
       dont_data_tourisme: calcHebergements.dt_only,
       dont_sirene: calcHebergements.sir_only,
       dont_deux_sources: calcHebergements.deux_sources,
-      hotels: dtH.hotels,
-      collectifs: dtH.collectifs,
-      locations: dtH.locations,
-      autres: dtH.autres,
+      detail: {
+        hotels:            ligne(hH,        calcHebergements.total),
+        campings:          ligne(hCampings,  calcHebergements.total),
+        meubles_locations: ligne(hLocations, calcHebergements.total),
+        collectifs:        ligne(hCollectifs,calcHebergements.total),
+        autres:            ligne(hAutres,    calcHebergements.total),
+      },
     },
     activites: {
       total_unique: calcActivites.total,
       dont_data_tourisme: calcActivites.dt_only,
       dont_sirene: calcActivites.sir_only,
       dont_deux_sources: calcActivites.deux_sources,
-      sports_loisirs: dtA.sports_loisirs,
-      visites_tours: dtA.visites_tours,
-      experiences: dtA.experiences,
+      detail: {
+        sports_loisirs:    ligne(aSports,  calcActivites.total),
+        visites_tours:     ligne(aVisites, calcActivites.total),
+        experiences:       ligne(aExp,     calcActivites.total),
+        agences_activites: ligne(aAgences, calcActivites.total),
+      },
     },
     culture: {
       total_unique: calcCulture.total,
       dont_data_tourisme: calcCulture.dt_only,
       dont_sirene: calcCulture.sir_only,
       dont_deux_sources: calcCulture.deux_sources,
+      detail: {
+        patrimoine:       ligne(cPatrimoine, calcCulture.total),
+        religieux:        ligne(cReligieux,  calcCulture.total),
+        musees_galeries:  ligne(cMusees,     calcCulture.total),
+        spectacle_vivant: ligne(cSpectacle,  calcCulture.total),
+        nature:           ligne(cNature,     calcCulture.total),
+      },
     },
     services: {
       total_unique: calcServices.total,
       dont_data_tourisme: calcServices.dt_only,
       dont_sirene: calcServices.sir_only,
       dont_deux_sources: calcServices.deux_sources,
-      offices_tourisme: dtS.offices_tourisme,
-      agences: dtS.agences,
-      location_materiel: dtS.location_materiel,
-      transport: dtS.transport,
+      detail: {
+        offices_tourisme:  ligne(sOT,       calcServices.total),
+        agences_voyage:    ligne(sAgences,  calcServices.total),
+        location_materiel: ligne(sLocation, calcServices.total),
+        transport:         ligne(sTransport,calcServices.total),
+      },
     },
     total_stock_physique: total,
-    taux_couverture_dt,
+    couverture: {
+      hebergements: couvH,
+      activites:    couvA,
+      culture:      couvC,
+      services:     couvS,
+      global:       couvGlobal,
+    },
+    ratio_particuliers_hebergement,
     sources_disponibles: {
       data_tourisme: !!dt,
       sirene: !!sirene,

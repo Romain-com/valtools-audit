@@ -6,6 +6,7 @@ export type CategorieStock = 'hebergements' | 'activites' | 'culture' | 'service
 
 export type SousCategorieHebergement = 'hotels' | 'collectifs' | 'locations' | 'autres'
 export type SousCategorieActivite = 'sports_loisirs' | 'visites_tours' | 'experiences'
+export type SousCategorieCulture = 'patrimoine' | 'religieux' | 'musees_galeries' | 'spectacle_vivant' | 'nature'
 export type SousCategorieService = 'offices_tourisme' | 'agences' | 'location_materiel' | 'transport'
 
 // ─── Établissements bruts (pour déduplication) ────────────────────────────────
@@ -50,6 +51,11 @@ export interface RetourStocksDATATourisme {
   }
   culture: {
     total: number
+    patrimoine: number
+    religieux: number
+    musees_galeries: number
+    spectacle_vivant: number
+    nature: number
   }
   services: {
     total: number
@@ -72,7 +78,14 @@ export interface RetourStocksSIRENE {
   total_global: number
 }
 
-// ─── Stocks finaux après déduplication ────────────────────────────────────────
+// ─── Stocks finaux — sous-type volume + % ─────────────────────────────────────
+
+export interface LigneDetail {
+  volume: number    // nombre d'établissements
+  pct: number       // % sur le total de la catégorie (arrondi 1 décimale)
+}
+
+// ─── Base commune à toutes les catégories ────────────────────────────────────
 
 export interface StocksParCategorie {
   total_unique: number
@@ -81,27 +94,52 @@ export interface StocksParCategorie {
   dont_deux_sources: number       // présents dans les deux
 }
 
+// ─── Stocks finaux après déduplication ────────────────────────────────────────
+
 export interface StocksPhysiquesFinaux {
   hebergements: StocksParCategorie & {
-    hotels: number
-    collectifs: number
-    locations: number
-    autres: number
+    detail: {
+      hotels: LigneDetail            // Hotel DT + NAF 55.10Z SIRENE
+      campings: LigneDetail          // NAF 55.30Z SIRENE (DT classe en 'autres')
+      meubles_locations: LigneDetail // RentalAccommodation DT + NAF 55.20Z SIRENE
+      collectifs: LigneDetail        // CollectiveAccommodation DT
+      autres: LigneDetail            // autres DT + NAF 55.90Z SIRENE
+    }
   }
   activites: StocksParCategorie & {
-    sports_loisirs: number
-    visites_tours: number
-    experiences: number
+    detail: {
+      sports_loisirs: LigneDetail    // SportsAndLeisurePlace DT + NAF 93.11-93.19 SIRENE
+      visites_tours: LigneDetail     // Tour, WalkingTour DT
+      experiences: LigneDetail       // ActivityProvider DT + NAF 93.21-93.29 SIRENE
+      agences_activites: LigneDetail // NAF 79.90Z SIRENE
+    }
   }
-  culture: StocksParCategorie
+  culture: StocksParCategorie & {
+    detail: {
+      patrimoine: LigneDetail        // Castle, RemarkableBuilding, CulturalSite DT + NAF 91.03Z SIRENE
+      religieux: LigneDetail         // Church, Cathedral, Monastery DT
+      musees_galeries: LigneDetail   // Museum, Library DT + NAF 91.01-91.02 SIRENE
+      spectacle_vivant: LigneDetail  // Theater, Cinema DT + NAF 90.01-90.02 SIRENE
+      nature: LigneDetail            // NaturalHeritage, ParkAndGarden, Beach DT + NAF 91.04Z SIRENE
+    }
+  }
   services: StocksParCategorie & {
-    offices_tourisme: number
-    agences: number
-    location_materiel: number
-    transport: number
+    detail: {
+      offices_tourisme: LigneDetail  // TouristInformationCenter DT
+      agences_voyage: LigneDetail    // IncomingTravelAgency DT + NAF 79.11-79.12 SIRENE
+      location_materiel: LigneDetail // EquipmentRental DT
+      transport: LigneDetail         // Transport DT
+    }
   }
   total_stock_physique: number
-  taux_couverture_dt: number      // % du stock SIRENE présent dans DATA Tourisme (0-100)
+  couverture: {
+    hebergements: number   // % des établissements SIRENE hébergements trouvés dans DT
+    activites: number      // peut dépasser 100% si DT plus riche (patrimoine, associations)
+    culture: number
+    services: number
+    global: number         // couverture globale sur l'ensemble
+  }
+  ratio_particuliers_hebergement: number  // % NAF 55.20Z (meublés particuliers) / total hébergements SIRENE
   sources_disponibles: {
     data_tourisme: boolean
     sirene: boolean

@@ -1,5 +1,5 @@
 # CONTEXT.MD — Destination Digital Audit App
-> Dernière mise à jour : Phase 2 — Bloc 5 Stocks physiques ✅ (2026-02-25)
+> Dernière mise à jour : Phase 2 — Bloc 5 Corrections déduplication + détail ✅ (2026-02-25)
 > Destination de test de référence : **Annecy** | Domaine OT : `lac-annecy.com`
 
 ---
@@ -947,19 +947,29 @@ services     : ['79.11Z', '79.12Z', '79.90Z']
 - Retourne counts par catégorie + sous-catégories + `etablissements_bruts[]` pour déduplication
 
 **Déduplication DATA Tourisme ↔ Recherche Entreprises** :
-- Score de similarité : nom exact (+3), inclusion (+2), Levenshtein ≤ 3 (+1), code postal identique (+1), adresse partielle (+1)
-- Doublon confirmé si score ≥ 3
-- `taux_couverture_dt` = % des établissements SIRENE présents dans DATA Tourisme
+- Score de similarité : nom exact (+3), inclusion (+2), Levenshtein ≤ 3 (+1), mots significatifs communs ≥2 (+2), 1 mot commun nom court (+1), code postal identique (+1), adresse partielle (+1)
+- ⚠️ Seuil = 2 (pas 3) — SIRENE utilise souvent des noms de sociétés holdings (ex: "GESTION HOTELIERE XYZ") vs nom commercial DT → seuil ≥ 3 manquait trop de matchs
+- Mots vides exclus du pivot : articles, prépositions, formes juridiques, mots sectoriels (`hotel`, `camping`, etc.)
+- `couverture` par catégorie (%) + `couverture.global` — remplace l'ancien `taux_couverture_dt`
+- `ratio_particuliers_hebergement` = % NAF 55.20Z (meublés particuliers) / total SIRENE hébergements
+
+**Sous-catégories enrichies** :
+- Hébergements DT : hotels / collectifs / locations / autres
+- Culture DT : patrimoine / religieux / musees_galeries / spectacle_vivant / nature ← **NEW**
+- SIRENE mappé par NAF : voir `NAF_SOUS_CAT_HEBERGEMENT/ACTIVITES/CULTURE/SERVICES` dans orchestrateur
 
 **Tests validés — Annecy (INSEE 74010)** :
 
 | Source | Hébergements | Activités | Culture | Services | Total |
 |---|---|---|---|---|---|
-| DATA Tourisme | 42 (37 hôtels) | 153 | 55 | 14 | 264 |
-| Recherche Entreprises | 438 | 811 | 699 | 69 | 2 017 |
-| **Fusionné** | **470** | **919** | **743** | **78** | **2 271** |
+| DATA Tourisme | 42 (37 hôtels) | 153 | 55 (32 patr/15 rel/1 musée/7 nature) | 14 | 264 |
+| Recherche Entreprises | 438 (123 hôtels/246 meublés/1 camping) | 811 | 699 (660 spectacle) | 69 | 2 017 |
+| **Fusionné** | **461** | **927** | **745** | **80** | **2 213** |
+| Doublons | 19 | 37 | 9 | 3 | **68 total** |
 
-Durée : ~16s | Taux couverture DT : ~0% (beaucoup d'établissements SIRENE non référencés DT) | OpenAI synthèse ✅
+Couverture DT globale : 3% | Ratio particuliers hébergement : 56.2% | OpenAI synthèse ✅
+
+⚠️ NAF `90.01Z/90.02Z/90.03A` = spectacle vivant = 660 SIRENE (artistes/auto-entrepreneurs) → culture SIRENE dominée par spectacle, pas par patrimoine
 
 **Coût du bloc** :
 ```
