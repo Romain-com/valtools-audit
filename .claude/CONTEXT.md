@@ -900,6 +900,45 @@ Phase B :
 - ⚠️ `top_5_opportunites` : construire `vrais_gaps` (croisement Phase A ↔ SERP live) AVANT d'envoyer à OpenAI — sans ça, OpenAI invente des opportunités sur des keywords où l'OT est déjà bien positionné
 - ⚠️ Timeout OpenAI classification : 90s (60s trop court pour les gros batches de 50 keywords)
 
+#### Préparation Bloc 5 — Scan types DATA Tourisme ✅ TERMINÉ (2026-02-24)
+
+**Objectif** : cartographier tous les types `@type` présents dans les fichiers DATA Tourisme pour une commune avant de coder le Bloc 5 (stocks physiques).
+
+**Fichiers créés** :
+```
+microservice/routes/scan-types.ts          → GET /scan-types?code_insee=XXX
+microservice/services/datatourisme.ts      → export getFilepathsParCommune() ajouté
+scripts/scan-datatourisme-types.js         → script standalone (node scripts/scan-datatourisme-types.js 74010)
+```
+
+**Endpoint microservice** :
+```
+GET http://localhost:3001/scan-types?code_insee=74010
+Retourne : { code_insee, total_fichiers, types_distincts, types: [{ type, count }] }
+Tri : fréquence décroissante
+Filtre : aucun — tous les types @type bruts
+```
+
+**Résultats scan Annecy (INSEE 74010) — validés** :
+- 323 fichiers, 114 types distincts
+- Notes : `PointOfInterest` (323) et `PlaceOfInterest` (314) = types racines omniprésents, à ignorer pour les regroupements
+- `olo:OrderedList` (13) = artefact technique, à ignorer
+- Les types `schema:XXX` sont des doublons des types sans préfixe — compter l'un ou l'autre uniquement
+
+**Regroupements définis pour le Bloc 5** (à affiner lors du codage) :
+
+| Catégorie | Types DATA Tourisme | Count Annecy |
+|---|---|---|
+| HÉBERGEMENTS | `Accommodation`, `schema:Accommodation`, `schema:LodgingBusiness`, `Hotel`, `schema:Hotel`, `HotelTrade`, `CollectiveAccommodation`, `HolidayResort`, `RentalAccommodation`, `SelfCateringAccommodation` | ~42 |
+| ACTIVITÉS & LOISIRS | `SportsAndLeisurePlace`, `ActivityProvider`, `Tour`, `WalkingTour`, `EducationalTrail`, `CyclingTour`, `FitnessCenter`, `TennisComplex`, `ClimbingWall`, `NauticalCentre`, `SwimmingPool`, `EquestrianCenter`, `BoulesPitch`, `LeisureComplex` | ~127+ |
+| CULTURE & PATRIMOINE | `CulturalSite`, `ReligiousSite`, `Church`, `Cathedral`, `Convent`, `Monastery`, `CityHeritage`, `TechnicalHeritage`, `RemarkableBuilding`, `NaturalHeritage`, `Museum`, `ArtGalleryOrExhibitionGallery`, `Castle`, `Palace`, `Bridge`, `Theater`, `Cinema`, `InterpretationCentre` | ~68+ |
+| SERVICES TOURISTIQUES | `TouristInformationCenter`, `LocalTouristOffice`, `IncomingTravelAgency`, `TourOperatorOrTravelAgency`, `Transport`, `ConvenientService` | ~5+ |
+
+**À exclure** (hors scope) :
+- `FoodEstablishment`, `Restaurant`, `HotelRestaurant`, `BistroOrWineBar`, `BarOrPub`, `Store`, `CraftsmanShop`, `schema:LocalBusiness`, `EquipmentRental`, `EquipmentRentalShop`, `Rental`, `Product`, `NightClub`, `Casino`, `Airport`
+
+---
+
 #### Bloc 5 — Stocks physiques ✅ TERMINÉ (2026-02-25)
 
 **Architecture** :
@@ -969,6 +1008,8 @@ services     : ['79.11Z', '79.12Z', '79.90Z']
 
 Couverture DT globale : 3% | Ratio particuliers hébergement : 56.2% | OpenAI synthèse ✅
 
+> **Note évolution** : l'ancienne valeur fusionnée était **2 271** (seuil dédup = 3, seulement 10 doublons détectés). Après correction du seuil à 2 + pivot mots significatifs → **2 213** (68 doublons). La valeur 2 271 dans les résumés de session antérieurs est obsolète.
+
 ⚠️ NAF `90.01Z/90.02Z/90.03A` = spectacle vivant = 660 SIRENE (artistes/auto-entrepreneurs) → culture SIRENE dominée par spectacle, pas par patrimoine
 
 **Coût du bloc** :
@@ -979,53 +1020,6 @@ OpenAI gpt-4o-mini (1 appel)   : 0.001€
 TOTAL                          : 0.001€
 ```
 
----
-
-#### Préparation Bloc 5 — Scan types DATA Tourisme ✅ TERMINÉ (2026-02-24)
-
-**Objectif** : cartographier tous les types `@type` présents dans les fichiers DATA Tourisme pour une commune avant de coder le Bloc 5 (stocks physiques).
-
-**Fichiers créés** :
-```
-microservice/routes/scan-types.ts          → GET /scan-types?code_insee=XXX
-microservice/services/datatourisme.ts      → export getFilepathsParCommune() ajouté
-scripts/scan-datatourisme-types.js         → script standalone (node scripts/scan-datatourisme-types.js 74010)
-```
-
-**Endpoint microservice** :
-```
-GET http://localhost:3001/scan-types?code_insee=74010
-Retourne : { code_insee, total_fichiers, types_distincts, types: [{ type, count }] }
-Tri : fréquence décroissante
-Filtre : aucun — tous les types @type bruts
-```
-
-**Résultats scan Annecy (INSEE 74010) — validés** :
-- 323 fichiers, 114 types distincts
-- Notes : `PointOfInterest` (323) et `PlaceOfInterest` (314) = types racines omniprésents, à ignorer pour les regroupements
-- `olo:OrderedList` (13) = artefact technique, à ignorer
-- Les types `schema:XXX` sont des doublons des types sans préfixe — compter l'un ou l'autre uniquement
-
-**Regroupements définis pour le Bloc 5** (à affiner lors du codage) :
-
-| Catégorie | Types DATA Tourisme | Count Annecy |
-|---|---|---|
-| HÉBERGEMENTS | `Accommodation`, `schema:Accommodation`, `schema:LodgingBusiness`, `Hotel`, `schema:Hotel`, `HotelTrade`, `CollectiveAccommodation`, `HolidayResort`, `RentalAccommodation`, `SelfCateringAccommodation` | ~42 |
-| ACTIVITÉS & LOISIRS | `SportsAndLeisurePlace`, `ActivityProvider`, `Tour`, `WalkingTour`, `EducationalTrail`, `CyclingTour`, `FitnessCenter`, `TennisComplex`, `ClimbingWall`, `NauticalCentre`, `SwimmingPool`, `EquestrianCenter`, `BoulesPitch`, `LeisureComplex` | ~127+ |
-| CULTURE & PATRIMOINE | `CulturalSite`, `ReligiousSite`, `Church`, `Cathedral`, `Convent`, `Monastery`, `CityHeritage`, `TechnicalHeritage`, `RemarkableBuilding`, `NaturalHeritage`, `Museum`, `ArtGalleryOrExhibitionGallery`, `Castle`, `Palace`, `Bridge`, `Theater`, `Cinema`, `InterpretationCentre` | ~68+ |
-| ÉVÈNEMENTS | `EntertainmentAndEvent`, `CulturalEvent`, `SportsEvent`, `SaleEvent`, `Market`, `Festival`, `Carnival`, `SocialEvent`, `ScreeningEvent` | ~9+ |
-| NAUTIQUE & OUTDOOR | `Beach`, `Marina`, `RiverPort`, `SightseeingBoat`, `Canal`, `ParkAndGarden`, `PicnicArea`, `PlayArea` | ~3+ |
-| SERVICES TOURISTIQUES | `TouristInformationCenter`, `LocalTouristOffice`, `IncomingTravelAgency`, `TourOperatorOrTravelAgency`, `Transport`, `ConvenientService` | ~5+ |
-
-**À exclure** (déjà dans TYPES_EXCLUS de `/poi` ou hors scope) :
-- `FoodEstablishment`, `Restaurant`, `HotelRestaurant`, `BistroOrWineBar`, `BarOrPub`, `Store`, `CraftsmanShop`, `schema:LocalBusiness`, `BusinessPlace`, `NonHousingRealEstateRental`, `EquipmentRental`, `EquipmentRentalShop`, `Rental`, `Product`, `ConventionCentre`, `IndustrialSite`, `NightClub`, `Casino`, `Airport`
-
-**Blocs suivants à implémenter** :
-- **Bloc 5** : Microservice `/stocks` endpoint — counts par catégorie (hébergements / activités / culture / évènements)
-- Social media (Instagram — hashtag stats + posts récents) — déjà dans Bloc 1, à orchestrer
-- Monitorank (contexte algo Google)
-- Analyse concurrents (DataForSEO + Haloscan)
-- Synthèse contenus OpenAI (copier-coller GDoc/GSlides)
 
 ### Phase 3 — Orchestration et UX
 - Page lancement + autocomplete + gestion doublon
