@@ -8,8 +8,11 @@ const axios = require('axios')
 require('dotenv').config({ path: '.env.local' })
 
 // ─── Cas de test ──────────────────────────────────────────────────────────────
+// Usage : node test-bloc2.js [destination] [code_insee] [siren_commune] [population]
+// Exemple : node test-bloc2.js Megève 74173 217401730 3600
+// Si aucun argument → cas par défaut (Vanves + Annecy)
 
-const CAS = [
+const CAS_DEFAUT = [
   {
     label: 'Vanves',
     destination: 'Vanves',
@@ -25,6 +28,18 @@ const CAS = [
     population_commune: 134738,
   },
 ]
+
+const CAS = process.argv[2]
+  ? [
+      {
+        label: process.argv[2],
+        destination: process.argv[2],
+        code_insee: process.argv[3] ?? '74010',
+        siren_commune: process.argv[4] ?? '200063402',
+        population_commune: Number(process.argv[5] ?? 0),
+      },
+    ]
+  : CAS_DEFAUT
 
 // Datasets
 const DATASET_COMMUNES = {

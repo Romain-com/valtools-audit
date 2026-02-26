@@ -14,31 +14,14 @@ import type {
   DispatchTS,
   ResultatDispatchTS,
 } from '@/types/volume-affaires'
-
-// URL de base — à adapter selon l'environnement
-const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
+import { executerEPCI } from '@/app/api/blocs/volume-affaires/epci/logic'
+import { executerTaxe } from '@/app/api/blocs/volume-affaires/taxe/logic'
+import { executerEPCICommunes } from '@/app/api/blocs/volume-affaires/epci-communes/logic'
+import { executerMelodi } from '@/app/api/blocs/volume-affaires/melodi/logic'
+import { executerOpenAIVolumeAffaires } from '@/app/api/blocs/volume-affaires/openai/logic'
 
 // Taux moyen national utilisé pour l'estimation des nuitées
 const TAUX_MOYEN_NUIT = 1.5
-
-/**
- * Appelle une route API interne avec un body JSON.
- * Pas de cache — les données d'audit doivent toujours être fraîches.
- */
-async function appelRoute<T>(chemin: string, body: object): Promise<T> {
-  const reponse = await fetch(`${BASE_URL}${chemin}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    cache: 'no-store',
-    body: JSON.stringify(body),
-  })
-
-  if (!reponse.ok) {
-    throw new Error(`[${chemin}] Erreur HTTP ${reponse.status}`)
-  }
-
-  return reponse.json() as Promise<T>
-}
 
 // ─── Fonctions de dispatch TS ─────────────────────────────────────────────────
 
@@ -132,40 +115,15 @@ export async function lancerBlocVolumeAffaires(
 
   try {
     // ─── Étape 1 : résolution de l'EPCI ────────────────────────────────────
-    const epciData = await appelRoute<{
-      siren_epci: string | null
-      nom_epci?: string
-      type_epci?: string
-      population_epci?: number
-    }>('/api/blocs/volume-affaires/epci', { code_insee })
+    const epciData = await executerEPCI({ code_insee })
 
     const siren_epci = epciData.siren_epci ?? null
 
     // ─── Étape 2 : taxes en parallèle (commune + EPCI si disponible) ───────
     const [taxeCommune, taxeEpci] = await Promise.all([
-      appelRoute<{
-        siren: string
-        lbudg: string
-        montant_taxe_euros: number
-        annee_donnees: number
-        taxe_non_instituee: boolean
-        dataset_source: string
-      }>('/api/blocs/volume-affaires/taxe', {
-        siren: siren_commune,
-        type_collecteur: 'commune',
-      }),
+      executerTaxe({ siren: siren_commune, type_collecteur: 'commune' }),
       siren_epci
-        ? appelRoute<{
-            siren: string
-            lbudg: string
-            montant_taxe_euros: number
-            annee_donnees: number
-            taxe_non_instituee: boolean
-            dataset_source: string
-          }>('/api/blocs/volume-affaires/taxe', {
-            siren: siren_epci,
-            type_collecteur: 'epci',
-          })
+        ? executerTaxe({ siren: siren_epci, type_collecteur: 'epci' })
         : Promise.resolve(null),
     ])
 
@@ -227,15 +185,7 @@ export async function lancerBlocVolumeAffaires(
     // ─── Étape 4 : analyse OpenAI ───────────────────────────────────────────
     const est_epci = collecteur.type_collecteur === 'epci'
 
-    const openaiData = await appelRoute<{
-      synthese_volume?: string
-      indicateurs_cles?: string[]
-      part_commune?: {
-        pourcentage: number
-        montant_euros: number
-        raisonnement: string
-      }
-    }>('/api/blocs/volume-affaires/openai', {
+    const openaiData = await executerOpenAIVolumeAffaires({
       destination,
       collecteur,
       est_epci,
@@ -251,10 +201,7 @@ export async function lancerBlocVolumeAffaires(
       let communes_epci: { code_insee: string; nom: string }[] = []
 
       if (siren_epci) {
-        const epciCommunesData = await appelRoute<{
-          communes?: { code_insee: string; nom: string }[]
-        }>('/api/blocs/volume-affaires/epci-communes', { siren_epci })
-
+        const epciCommunesData = await executerEPCICommunes({ siren_epci })
         communes_epci = epciCommunesData.communes ?? []
       }
 
@@ -264,10 +211,7 @@ export async function lancerBlocVolumeAffaires(
       }
 
       // Collecte Mélodi + ajustement coefficients OpenAI
-      const melodiData = await appelRoute<{
-        donnees?: DonneesLogementCommune[]
-        coefficients?: Coefficients
-      }>('/api/blocs/volume-affaires/melodi', {
+      const melodiData = await executerMelodi({
         communes: communes_epci,
         destination,
         departement: code_departement,

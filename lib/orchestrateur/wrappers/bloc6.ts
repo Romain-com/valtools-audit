@@ -46,7 +46,7 @@ export async function lancerBloc6(params: ParamsAudit): Promise<ResultatBloc> {
   )
 
   // ── Diagnostic — valeurs clés du Bloc 6 ──
-  const r = resultat as Record<string, unknown>
+  const r = resultat as unknown as Record<string, unknown>
   const airbnb = r.airbnb as Record<string, unknown> | undefined
   const booking = r.booking as Record<string, unknown> | undefined
   const indicateurs = r.indicateurs as Record<string, unknown> | undefined

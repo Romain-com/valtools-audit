@@ -14,29 +14,13 @@ import type {
   CoutsBloc4,
 } from '@/types/visibilite-seo'
 
-// URL de base — à adapter selon l'environnement (dev / prod)
-const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
+// Imports directs des logiques métier — évite les appels HTTP auto-référentiels
+import { executerHaloscanMarket } from '@/app/api/blocs/visibilite-seo/haloscan-market/logic'
+import { executerDataForSEORelated } from '@/app/api/blocs/visibilite-seo/dataforseo-related/logic'
+import { executerDataForSEORanked } from '@/app/api/blocs/visibilite-seo/dataforseo-ranked/logic'
+import { executerClassificationSEO } from '@/app/api/blocs/visibilite-seo/classification/logic'
 
-/**
- * Appelle une route API interne avec un body JSON.
- * Pas de cache — les données d'audit doivent toujours être fraîches.
- */
-async function appelRoute<T>(chemin: string, body: object): Promise<T> {
-  const response = await fetch(`${BASE_URL}${chemin}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    cache: 'no-store',
-    body: JSON.stringify(body),
-  })
-
-  if (!response.ok) {
-    throw new Error(`[${chemin}] Erreur HTTP ${response.status}`)
-  }
-
-  return response.json() as Promise<T>
-}
-
-// ─── Types des réponses de chaque route ──────────────────────────────────────
+// ─── Types des réponses de chaque module ──────────────────────────────────────
 
 interface HaloscanMarketReponse {
   keywords_marche: KeywordMarche[]
@@ -79,9 +63,9 @@ export async function lancerPhaseA(
   try {
     // ─── Étape 1 : 3 sources en parallèle — chaque source est indépendante ───
     const [haloscan_settled, related_settled, ranked_settled] = await Promise.allSettled([
-      appelRoute<HaloscanMarketReponse>('/api/blocs/visibilite-seo/haloscan-market', { destination }),
-      appelRoute<DataForSEORelatedReponse>('/api/blocs/visibilite-seo/dataforseo-related', { destination }),
-      appelRoute<DataForSEORankedReponse>('/api/blocs/visibilite-seo/dataforseo-ranked', { domaine_ot }),
+      executerHaloscanMarket({ destination }) as Promise<HaloscanMarketReponse>,
+      executerDataForSEORelated({ destination }) as Promise<DataForSEORelatedReponse>,
+      executerDataForSEORanked({ domaine_ot }) as Promise<DataForSEORankedReponse>,
     ])
 
     // Extraire les valeurs — null si la source a échoué
@@ -135,14 +119,14 @@ export async function lancerPhaseA(
     const volume_marche_seeds = haloscan_result?.volume_marche_seeds ?? 0
 
     // ─── Étape 3 : classification OpenAI ─────────────────────────────────────
-    const classificationReponse = await appelRoute<{
-      keywords_classes: KeywordClassifie[]
-      cout: { nb_appels: number; cout_unitaire: number; cout_total: number }
-    }>('/api/blocs/visibilite-seo/classification', {
+    const classificationReponse = await executerClassificationSEO({
       destination,
       keywords_marche,
       keywords_positionnes_ot,
-    })
+    }) as {
+      keywords_classes: KeywordClassifie[]
+      cout: { nb_appels: number; cout_unitaire: number; cout_total: number }
+    }
 
     const { keywords_classes } = classificationReponse
 

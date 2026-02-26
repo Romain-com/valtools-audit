@@ -3,6 +3,9 @@
 // Flux : DATA Tourisme ‖ SIRENE → déduplication → synthèse OpenAI → tracking coûts
 
 import { enregistrerCoutsBloc } from '@/lib/tracking-couts'
+import { executerDataTourisme } from '@/app/api/blocs/stocks-physiques/datatourisme/logic'
+import { executerSIRENE } from '@/app/api/blocs/stocks-physiques/sirene/logic'
+import { executerSyntheseStocksPhysiques } from '@/app/api/blocs/stocks-physiques/synthese/logic'
 import type {
   ParamsBloc5,
   ResultatBloc5,
@@ -15,27 +18,8 @@ import type {
   SyntheseStocksPhysiques,
 } from '@/types/stocks-physiques'
 
-const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
-
 // Seuil de déduplication : score >= 2 → doublon confirmé (abaissé depuis 3 pour réduire faux négatifs)
 const SEUIL_DOUBLON = 2
-
-// ─── Helpers d'appel HTTP ─────────────────────────────────────────────────────
-
-async function appelRoute<T>(chemin: string, body: object): Promise<T> {
-  const reponse = await fetch(`${BASE_URL}${chemin}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    cache: 'no-store',
-    body: JSON.stringify(body),
-  })
-
-  if (!reponse.ok) {
-    throw new Error(`[${chemin}] Erreur HTTP ${reponse.status}`)
-  }
-
-  return reponse.json() as Promise<T>
-}
 
 // ─── Normalisation pour la déduplication ─────────────────────────────────────
 
@@ -429,14 +413,8 @@ export async function lancerBlocStocksPhysiques(
 
   // ─── Étape 1 : collecte parallèle des deux sources ──────────────────────────
   const [dt_settled, sirene_settled] = await Promise.allSettled([
-    appelRoute<RetourStocksDATATourisme>(
-      '/api/blocs/stocks-physiques/datatourisme',
-      { code_insee }
-    ),
-    appelRoute<RetourStocksSIRENE>(
-      '/api/blocs/stocks-physiques/sirene',
-      { code_insee }
-    ),
+    executerDataTourisme({ code_insee }),
+    executerSIRENE({ code_insee }),
   ])
 
   const dt_result = dt_settled.status === 'fulfilled' ? dt_settled.value : null
@@ -469,10 +447,7 @@ export async function lancerBlocStocksPhysiques(
   // ─── Étape 3 : synthèse OpenAI ───────────────────────────────────────────────
   let synthese: SyntheseStocksPhysiques | null = null
   try {
-    synthese = await appelRoute<SyntheseStocksPhysiques>(
-      '/api/blocs/stocks-physiques/synthese',
-      { destination, stocks }
-    )
+    synthese = await executerSyntheseStocksPhysiques({ destination, stocks }) as SyntheseStocksPhysiques
   } catch (err) {
     const msg = `Synthèse OpenAI échouée : ${err}`
     console.warn('[Bloc 5]', msg)

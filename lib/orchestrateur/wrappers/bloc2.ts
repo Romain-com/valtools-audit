@@ -19,7 +19,7 @@ export async function lancerBloc2(params: ParamsAudit): Promise<ResultatBloc> {
   )
 
   // ── Diagnostic — valeurs clés du Bloc 2 ──
-  const collecteur = (resultat as Record<string, unknown>).collecteur as Record<string, unknown> | undefined
+  const collecteur = (resultat as unknown as Record<string, unknown>).collecteur as Record<string, unknown> | undefined
   logInfo(params.audit_id, 'Bloc 2 — résultats reçus', 'bloc2', {
     montant_taxe_euros: collecteur?.montant_taxe_euros ?? null,
     type_collecteur: collecteur?.type_collecteur ?? null,

@@ -13,7 +13,7 @@ export async function lancerBloc3(params: ParamsAudit): Promise<ResultatBloc> {
   const resultat = await lancerBlocSchemaDigital(params.nom, params.audit_id)
 
   // ── Diagnostic — valeurs clés du Bloc 3 ──
-  const r = resultat as Record<string, unknown>
+  const r = resultat as unknown as Record<string, unknown>
   const haloscan = (r.haloscan as Array<Record<string, unknown>>)?.[0]
   const serp = r.serp_fusionne as Array<Record<string, unknown>> | undefined
   logInfo(params.audit_id, 'Bloc 3 — résultats reçus', 'bloc3', {

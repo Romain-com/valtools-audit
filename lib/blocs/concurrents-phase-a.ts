@@ -10,6 +10,8 @@
 
 import { API_COSTS } from '@/lib/api-costs'
 import { enregistrerCoutsBloc } from '@/lib/tracking-couts'
+import { executerIdentificationConcurrents } from '@/app/api/blocs/concurrents/identification/logic'
+import { executerMetriquesConcurrents } from '@/app/api/blocs/concurrents/metriques/logic'
 import type {
   ParamsBlocConcurrents,
   ConcurrentIdentifie,
@@ -18,44 +20,15 @@ import type {
   SiteCompetitorHaloscan,
 } from '@/types/concurrents'
 
-const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
-
-// ─── Helper HTTP ──────────────────────────────────────────────────────────────
-
-async function appelRoute<T>(chemin: string, body: object): Promise<T> {
-  const reponse = await fetch(`${BASE_URL}${chemin}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    cache: 'no-store',
-    body: JSON.stringify(body),
-  })
-
-  if (!reponse.ok) {
-    throw new Error(`[${chemin}] Erreur HTTP ${reponse.status}`)
-  }
-
-  return reponse.json() as Promise<T>
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-// ─── Types des réponses de routes ─────────────────────────────────────────────
+// ─── Type de la réponse d'identification ──────────────────────────────────────
 
 interface IdentificationReponse {
   concurrents: ConcurrentIdentifie[]
   analyse_paysage: string
-}
-
-interface MetriquesReponse {
-  metriques: MetriquesConcurrent
-  couts: {
-    haloscan: { nb_appels: number; cout_total: number }
-    haloscan_positions: { nb_appels: number; cout_total: number }
-    dataforseo_ranked: { nb_appels: number; cout_total: number }
-    dataforseo_maps: { nb_appels: number; cout_total: number }
-  }
 }
 
 // ─── Haloscan siteCompetitors ─────────────────────────────────────────────────
@@ -211,10 +184,7 @@ export async function lancerPhaseAConcurrents(
   let haloscan_competitors: SiteCompetitorHaloscan[] = []
 
   const [identificationSettled, siteCompetitorsSettled] = await Promise.allSettled([
-    appelRoute<IdentificationReponse>('/api/blocs/concurrents/identification', {
-      contexte,
-      destination,
-    }),
+    executerIdentificationConcurrents({ contexte, destination }),
     getSiteCompetitors(domaine_ot),
   ])
 
@@ -290,7 +260,7 @@ export async function lancerPhaseAConcurrents(
     let metriques: MetriquesConcurrent
 
     try {
-      const reponse = await appelRoute<MetriquesReponse>('/api/blocs/concurrents/metriques', {
+      const reponse = await executerMetriquesConcurrents({
         concurrent,
         serp_cache: serp_cache ?? [],
       })

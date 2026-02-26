@@ -27,10 +27,11 @@ export async function lancerBloc1(params: ParamsAudit): Promise<ResultatBloc> {
   )
 
   // ── Diagnostic — valeurs clés du Bloc 1 ──
-  const google = (resultat as Record<string, unknown>).google as Record<string, unknown> | undefined
+  const resultatObj = resultat as unknown as Record<string, unknown>
+  const google = resultatObj.google as Record<string, unknown> | undefined
   const ot = google?.ot as Record<string, unknown> | undefined
-  const instagram = (resultat as Record<string, unknown>).instagram as Record<string, unknown> | undefined
-  const positionnement_ia = (resultat as Record<string, unknown>).positionnement_ia as Record<string, unknown> | undefined
+  const instagram = resultatObj.instagram as Record<string, unknown> | undefined
+  const positionnement_ia = resultatObj.positionnement_ia as Record<string, unknown> | undefined
   logInfo(params.audit_id, 'Bloc 1 — résultats reçus', 'bloc1', {
     note_ot: ot?.note ?? null,
     nb_avis_ot: ot?.avis ?? null,

@@ -93,7 +93,7 @@ export async function lancerBloc4PhaseB(
   const coutTotal = couts_phase_a.total + (resultatPhaseB as { synthese_narrative?: string } ? 0.001 : 0)
 
   // ── Diagnostic — valeurs clés Bloc 4 Phase B ──
-  const phaseB = resultatPhaseB as Record<string, unknown>
+  const phaseB = resultatPhaseB as unknown as Record<string, unknown>
   logInfo(params.audit_id, 'Bloc 4 Phase B — résultats reçus', 'bloc4', {
     nb_keywords_valides_recus: params.keywords_valides?.length ?? 0,
     nb_serp_results: (phaseB.serp_results as unknown[])?.length ?? 0,

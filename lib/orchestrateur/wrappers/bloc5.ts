@@ -16,7 +16,7 @@ export async function lancerBloc5(params: ParamsAudit): Promise<ResultatBloc> {
   })
 
   // ── Diagnostic — valeurs clés du Bloc 5 ──
-  const r = resultat as Record<string, unknown>
+  const r = resultat as unknown as Record<string, unknown>
   const stocks = r.stocks as Record<string, unknown> | undefined
   const hebergements = stocks?.hebergements as Record<string, unknown> | undefined
   const activites = stocks?.activites as Record<string, unknown> | undefined

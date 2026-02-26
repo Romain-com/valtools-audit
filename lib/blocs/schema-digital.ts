@@ -4,6 +4,13 @@
 
 import { API_COSTS } from '@/lib/api-costs'
 import { enregistrerCoutsBloc } from '@/lib/tracking-couts'
+import { executerSERP } from '@/app/api/blocs/schema-digital/serp/logic'
+import { executerClassification } from '@/app/api/blocs/schema-digital/classification/logic'
+import { executerHaloscan } from '@/app/api/blocs/schema-digital/haloscan/logic'
+import { executerDomainAnalytics } from '@/app/api/blocs/schema-digital/domain-analytics/logic'
+import { executerPageSpeed } from '@/app/api/blocs/schema-digital/pagespeed/logic'
+import { executerAnalyseOT } from '@/app/api/blocs/schema-digital/analyse-ot/logic'
+import { executerOpenAISchemaDigital } from '@/app/api/blocs/schema-digital/openai/logic'
 import type {
   ResultatSchemaDigital,
   ResultatHaloscan,
@@ -11,28 +18,6 @@ import type {
   AnalyseSiteOT,
   VisibiliteParIntention,
 } from '@/types/schema-digital'
-
-// URL de base — à adapter selon l'environnement (dev / prod)
-const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
-
-/**
- * Appelle une route API interne avec un body JSON.
- * Pas de cache — les données d'audit doivent toujours être fraîches.
- */
-async function appelRoute<T>(chemin: string, body: object): Promise<T> {
-  const response = await fetch(`${BASE_URL}${chemin}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    cache: 'no-store',
-    body: JSON.stringify(body),
-  })
-
-  if (!response.ok) {
-    throw new Error(`[${chemin}] Erreur HTTP ${response.status}`)
-  }
-
-  return response.json() as Promise<T>
-}
 
 /**
  * Point d'entrée du Bloc 3 — Schéma digital & Santé technique.
@@ -46,32 +31,11 @@ export async function lancerBlocSchemaDigital(
 ): Promise<ResultatSchemaDigital> {
   try {
     // ─── Étape 1 : SERP (5 requêtes en parallèle) ────────────────────────────
-    const { par_requete, tous_resultats } = await appelRoute<{
-      par_requete: Array<{
-        requete: string
-        keyword: string
-        top3: Array<{ position: number; url: string; domaine: string; titre: string; meta_description: string; requete_source: string }>
-      }>
-      tous_resultats: Array<{ position: number; url: string; domaine: string; titre: string; meta_description: string; requete_source: string }>
-    }>('/api/blocs/schema-digital/serp', { destination })
+    const { par_requete, tous_resultats } = await executerSERP({ destination })
 
     // ─── Étape 2 : classification OpenAI (contexte enrichi par intention) ────
     const { resultats_classes, top3_officiels, domaine_ot, visibilite_ot_par_intention, score_visibilite_ot } =
-      await appelRoute<{
-        resultats_classes: Array<{
-          position: number
-          domaine: string
-          categorie: string
-          titre: string
-          meta_description: string
-          url: string
-          requete_source: string
-        }>
-        top3_officiels: ResultatSchemaDigital['top3_officiels']
-        domaine_ot: string | null
-        visibilite_ot_par_intention: Record<string, VisibiliteParIntention>
-        score_visibilite_ot: number
-      }>('/api/blocs/schema-digital/classification', {
+      await executerClassification({
         destination,
         tous_resultats,
         par_requete,
@@ -104,11 +68,7 @@ export async function lancerBlocSchemaDigital(
     const couts_seo = { haloscan: 0, dataforseo: 0 }
 
     for (const domaine of top3_domaines) {
-      const haloscanData = await appelRoute<{
-        domaine: string
-        donnees_valides: boolean
-        resultat: ResultatHaloscan
-      }>('/api/blocs/schema-digital/haloscan', { domaine })
+      const haloscanData = await executerHaloscan({ domaine })
 
       // Crédit Haloscan consommé dans tous les cas (même si vide)
       couts_seo.haloscan++
@@ -117,10 +77,7 @@ export async function lancerBlocSchemaDigital(
         haloscan.push(haloscanData.resultat)
       } else {
         // Fallback DataForSEO domain_rank_overview
-        const dfsData = await appelRoute<ResultatHaloscan>(
-          '/api/blocs/schema-digital/domain-analytics',
-          { domaine }
-        )
+        const dfsData = await executerDomainAnalytics({ domaine })
         haloscan.push(dfsData)
         couts_seo.dataforseo++
       }
@@ -129,37 +86,31 @@ export async function lancerBlocSchemaDigital(
     // ─── Étape 3b : PageSpeed + Analyse OT en parallèle ──────────────────────
     const [pagespeedReponse, analyseOT] = await Promise.all([
       top3_domaines.length
-        ? appelRoute<{ resultats: ResultatPageSpeed[] }>(
-            '/api/blocs/schema-digital/pagespeed',
-            { domaines: top3_domaines }
-          )
-        : Promise.resolve({ resultats: [] }),
+        ? executerPageSpeed({ domaines: top3_domaines })
+        : Promise.resolve({ resultats: [] as ResultatPageSpeed[] }),
 
       domaine_ot && siteOT
-        ? appelRoute<AnalyseSiteOT>('/api/blocs/schema-digital/analyse-ot', {
+        ? executerAnalyseOT({
             destination,
             domaine_ot,
             titre_ot: siteOT.titre,
             meta_description_ot: siteOT.meta_description,
             url_ot: urlOT,
           })
-        : Promise.resolve(null),
+        : Promise.resolve(null as AnalyseSiteOT | null),
     ])
 
     const pagespeed = pagespeedReponse.resultats
 
     // ─── Étape 4 : synthèse OpenAI ───────────────────────────────────────────
-    const openai = await appelRoute<ResultatSchemaDigital['openai']>(
-      '/api/blocs/schema-digital/openai',
-      {
-        destination,
-        top3_officiels,
-        haloscan,
-        pagespeed,
-        nb_sites_officiels_top10,
-        nb_ota_top10,
-      }
-    )
+    const openai = await executerOpenAISchemaDigital({
+      destination,
+      top3_officiels,
+      haloscan,
+      pagespeed,
+      nb_sites_officiels_top10,
+      nb_ota_top10,
+    })
 
     // ─── Étape 5 : agrégation des coûts ──────────────────────────────────────
     // couts_seo.haloscan = nb d'appels Haloscan réels (crédits consommés même si vide)
@@ -207,13 +158,13 @@ export async function lancerBlocSchemaDigital(
     // ─── Étape 7 : retour ────────────────────────────────────────────────────
     return {
       serp_fusionne: resultats_classes.map((r) => ({
-        position: r.position,
-        url: r.url,
+        position: r.position ?? 0,
+        url: r.url ?? '',
         domaine: r.domaine,
         titre: r.titre,
         meta_description: r.meta_description,
         categorie: r.categorie as ResultatSchemaDigital['serp_fusionne'][0]['categorie'],
-        requete_source: r.requete_source,
+        requete_source: r.requete_source ?? '',
       })),
       top3_officiels,
       domaine_ot_detecte: domaine_ot,

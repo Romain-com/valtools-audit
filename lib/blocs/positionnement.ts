@@ -1,41 +1,23 @@
 // Orchestrateur — Bloc 1 : Positionnement & Notoriété
 // Responsabilité : orchestrer la séquence complète des appels et agréger les résultats
 // Flux : POI → POI-sélection → (Maps ‖ Instagram) → OpenAI → tracking coûts
+// Les fonctions logiques sont importées directement pour éviter les appels HTTP auto-référentiels
 
 import { API_COSTS } from '@/lib/api-costs'
 import { enregistrerCoutsBloc } from '@/lib/tracking-couts'
+import { executerPOI } from '@/app/api/blocs/positionnement/poi/logic'
+import { executerPOISelection } from '@/app/api/blocs/positionnement/poi-selection/logic'
+import { executerMaps } from '@/app/api/blocs/positionnement/maps/logic'
+import { executerInstagram } from '@/app/api/blocs/positionnement/instagram/logic'
+import { executerOpenAIPositionnement } from '@/app/api/blocs/positionnement/openai/logic'
 import type {
   ResultatMaps,
   ResultatInstagram,
   AnalysePositionnement,
   AnalysePositionnementErreur,
   ResultatBlocPositionnement,
-  POIBrut,
-  POISelectionne,
   CoutsBloc,
 } from '@/types/positionnement'
-
-// URL de base — à adapter selon l'environnement (dev / prod)
-const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
-
-/**
- * Appelle une route API interne avec un body JSON.
- * Pas de cache — les données d'audit doivent toujours être fraîches.
- */
-async function appelRoute<T>(chemin: string, body: object): Promise<T> {
-  const response = await fetch(`${BASE_URL}${chemin}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    cache: 'no-store',
-    body: JSON.stringify(body),
-  })
-
-  if (!response.ok) {
-    throw new Error(`[${chemin}] Erreur HTTP ${response.status}`)
-  }
-
-  return response.json() as Promise<T>
-}
 
 /**
  * Point d'entrée du Bloc 1 — Positionnement & Notoriété.
@@ -53,32 +35,24 @@ export async function auditPositionnement(
 ): Promise<ResultatBlocPositionnement> {
 
   // ─── Étape 1 : récupération des POI bruts ────────────────────────────────
-  const { poi: poiListe } = await appelRoute<{ poi: POIBrut[] }>(
-    '/api/blocs/positionnement/poi',
-    { code_insee }
-  )
+  const { poi: poiListe } = await executerPOI({ code_insee })
 
   // ─── Étape 2 : sélection IA des 3 POI représentatifs ─────────────────────
-  const { poi_selectionnes } = await appelRoute<{ poi_selectionnes: POISelectionne[] }>(
-    '/api/blocs/positionnement/poi-selection',
-    { destination, poi_list: poiListe }
-  )
+  const { poi_selectionnes } = await executerPOISelection({ destination, poi_list: poiListe })
 
   // ─── Étape 3 : Maps et Instagram en parallèle ────────────────────────────
   // Maps reçoit les POI sélectionnés, Instagram est indépendant
   const [google, instagram] = await Promise.all([
-    appelRoute<ResultatMaps>('/api/blocs/positionnement/maps', {
-      destination,
-      poi_selectionnes,
-    }),
-    appelRoute<ResultatInstagram>('/api/blocs/positionnement/instagram', { hashtag }),
+    executerMaps({ destination, poi_selectionnes }) as Promise<ResultatMaps>,
+    executerInstagram({ hashtag }) as Promise<ResultatInstagram>,
   ])
 
   // ─── Étape 4 : analyse OpenAI — nourrie par Maps et Instagram ────────────
-  const positionnement = await appelRoute<AnalysePositionnement | AnalysePositionnementErreur>(
-    '/api/blocs/positionnement/openai',
-    { destination, google, instagram }
-  )
+  const positionnement = await executerOpenAIPositionnement({
+    destination,
+    google,
+    instagram,
+  }) as AnalysePositionnement | AnalysePositionnementErreur
 
   // ─── Étape 5 : agrégation des coûts ──────────────────────────────────────
   // 2 appels OpenAI : poi-selection + analyse finale

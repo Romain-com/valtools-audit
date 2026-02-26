@@ -8,6 +8,7 @@ import { scraperSiteOT } from '@/lib/scrapers/site-ot'
 import { scraperAirbnb } from '@/lib/scrapers/airbnb'
 import { scraperBooking } from '@/lib/scrapers/booking'
 import { scraperViator } from '@/lib/scrapers/viator'
+import { executerSyntheseStockEnLigne } from '@/app/api/blocs/stock-en-ligne/synthese/logic'
 import type {
   ParamsBloc6,
   ResultatBloc6,
@@ -19,23 +20,9 @@ import type {
   BoundingBox,
 } from '@/types/stock-en-ligne'
 
-const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
 const MICROSERVICE_URL = process.env.DATA_TOURISME_API_URL ?? 'http://localhost:3001'
 
-// ─── Helpers HTTP ─────────────────────────────────────────────────────────────
-
-async function appelRoute<T>(chemin: string, body: object): Promise<T> {
-  const reponse = await fetch(`${BASE_URL}${chemin}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    cache: 'no-store',
-    body: JSON.stringify(body),
-  })
-  if (!reponse.ok) {
-    throw new Error(`[${chemin}] Erreur HTTP ${reponse.status}`)
-  }
-  return reponse.json() as Promise<T>
-}
+// ─── Helper microservice bbox ──────────────────────────────────────────────────
 
 async function getBbox(code_insee: string): Promise<BoundingBox> {
   const reponse = await fetch(`${MICROSERVICE_URL}/bbox?code_insee=${code_insee}`, {
@@ -181,7 +168,7 @@ export async function lancerBlocStockEnLigne(
   let synthese = null
   let cout_openai = 0
   try {
-    const syntheseData = await appelRoute<ReturnType<typeof Object.assign>>('/api/blocs/stock-en-ligne/synthese', {
+    const syntheseData = await executerSyntheseStockEnLigne({
       destination: params.destination,
       domaine_ot: params.domaine_ot,
       ot,
@@ -190,7 +177,7 @@ export async function lancerBlocStockEnLigne(
       viator,
       indicateurs,
     })
-    const { cout: _cout, ...syntheseSeule } = syntheseData as { cout: { cout_total: number }; [k: string]: unknown }
+    const { cout: _cout, ...syntheseSeule } = syntheseData as unknown as { cout: { cout_total: number }; [k: string]: unknown }
     synthese = syntheseSeule as unknown as typeof synthese
     cout_openai = 0.001
   } catch (err: unknown) {

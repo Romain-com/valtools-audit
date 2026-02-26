@@ -7,33 +7,14 @@ import { API_COSTS } from '@/lib/api-costs'
 import { enregistrerCoutsBloc } from '@/lib/tracking-couts'
 import type {
   KeywordClassifie,
-  KeywordMarche,
   ResultatPhaseA,
   ResultatPhaseB,
   CoutsBloc4,
 } from '@/types/visibilite-seo'
 
-// URL de base — à adapter selon l'environnement (dev / prod)
-const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
-
-/**
- * Appelle une route API interne avec un body JSON.
- * Pas de cache — les données d'audit doivent toujours être fraîches.
- */
-async function appelRoute<T>(chemin: string, body: object): Promise<T> {
-  const response = await fetch(`${BASE_URL}${chemin}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    cache: 'no-store',
-    body: JSON.stringify(body),
-  })
-
-  if (!response.ok) {
-    throw new Error(`[${chemin}] Erreur HTTP ${response.status}`)
-  }
-
-  return response.json() as Promise<T>
-}
+// Imports directs des logiques métier — évite les appels HTTP auto-référentiels
+import { executerSERPTransac } from '@/app/api/blocs/visibilite-seo/serp-transac/logic'
+import { executerSyntheseVisibiliteSEO } from '@/app/api/blocs/visibilite-seo/synthese/logic'
 
 /**
  * Point d'entrée de la Phase B — Bloc 4.
@@ -57,22 +38,20 @@ export async function lancerPhaseB(
 ): Promise<ResultatPhaseB> {
   try {
     // ─── Étape 1 : SERP live pour les keywords transactionnels sélectionnés ───
-    const serpReponse = await appelRoute<{
+    const serpReponse = await executerSERPTransac({
+      keywords_classes: keywords_valides,
+      domaine_ot,
+    }) as {
       serp_results: ResultatPhaseB['serp_results']
       keywords_analyses: string[]
       cout: { nb_appels: number; cout_unitaire: number; cout_total: number }
-    }>('/api/blocs/visibilite-seo/serp-transac', {
-      keywords_classes: keywords_valides,
-      domaine_ot,
-    })
+    }
 
     const { serp_results } = serpReponse
     const nb_appels_serp = serpReponse.cout.nb_appels
 
     // ─── Étape 2 : synthèse OpenAI ────────────────────────────────────────────
-    const syntheseReponse = await appelRoute<ResultatPhaseB & {
-      cout: { nb_appels: number; cout_unitaire: number; cout_total: number }
-    }>('/api/blocs/visibilite-seo/synthese', {
+    const syntheseReponse = await executerSyntheseVisibiliteSEO({
       destination,
       domaine_ot,
       keywords_classes: keywords_valides,
@@ -82,7 +61,9 @@ export async function lancerPhaseB(
       volume_marche_seeds: phase_a.volume_marche_seeds,
       // trafic_capte_ot_estime : déjà calculé avec CTR par position dans dataforseo-ranked
       trafic_capte_ot_estime: phase_a.trafic_capte_ot_estime,
-    })
+    }) as ResultatPhaseB & {
+      cout: { nb_appels: number; cout_unitaire: number; cout_total: number }
+    }
 
     // ─── Étape 3 : agrégation des coûts Phase B + total bloc ──────────────────
     const couts_phase_b: CoutsBloc4 = {

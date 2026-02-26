@@ -51,7 +51,7 @@ export async function lancerBloc7PhaseA(params: ParamsAudit): Promise<ResultatBl
   )
 
   // ── Diagnostic — valeurs clés Bloc 7 Phase A ──
-  const phaseA = resultatPhaseA as Record<string, unknown>
+  const phaseA = resultatPhaseA as unknown as Record<string, unknown>
   const concurrents = phaseA.concurrents as unknown[] | undefined
   logInfo(params.audit_id, 'Bloc 7 Phase A — résultats reçus', 'bloc7', {
     nb_concurrents: concurrents?.length ?? 0,
@@ -101,7 +101,7 @@ export async function lancerBloc7PhaseB(
   const coutsBloc = (resultatPhaseB.couts?.total_bloc ?? 0) as number
 
   // ── Diagnostic — valeurs clés Bloc 7 Phase B ──
-  const phaseB = resultatPhaseB as Record<string, unknown>
+  const phaseB = resultatPhaseB as unknown as Record<string, unknown>
   logInfo(params.audit_id, 'Bloc 7 Phase B — résultats reçus', 'bloc7', {
     nb_concurrents_valides: params.concurrents_valides?.length ?? 0,
     position_globale: phaseB.position_globale ?? null,
