@@ -119,6 +119,10 @@ export async function lancerBlocVolumeAffaires(
 
     const siren_epci = epciData.siren_epci ?? null
 
+    if (!siren_epci) {
+      console.warn(`[Bloc 2] ${destination} — EPCI non résolu pour code_insee=${code_insee}. La commune collecte peut-être via budget annexe ou l'EPCI n'est pas référencé dans le CSV local.`)
+    }
+
     console.log(`[Bloc 2] ${destination} — siren_commune=${siren_commune} | code_insee=${code_insee} | siren_epci=${siren_epci ?? 'aucun'}`)
 
     // ─── Étape 2 : taxes en parallèle (commune + EPCI si disponible) ───────
@@ -163,6 +167,15 @@ export async function lancerBlocVolumeAffaires(
       dataset_source = taxeEpci.dataset_source
     } else {
       // Aucune taxe de séjour trouvée — retour dégradé sans appel OpenAI
+      // Diagnostic : identifier si l'EPCI n'est pas résolu ou si les données sont absentes du dataset
+      const diag = !siren_epci
+        ? 'epci_non_resolu'
+        : (taxeEpci && taxeEpci.montant_taxe_euros === 0)
+          ? 'epci_taxe_non_trouvee'
+          : 'commune_taxe_non_trouvee'
+
+      console.warn(`[Bloc 2] ${destination} — taxe_non_instituee. diagnostic=${diag} | siren_commune=${siren_commune} | siren_epci=${siren_epci ?? 'null'}`)
+
       return {
         collecteur: {
           siren: siren_commune,
@@ -173,6 +186,7 @@ export async function lancerBlocVolumeAffaires(
           nuitees_estimees: 0,
         },
         taxe_non_instituee: true,
+        diagnostic_epci: diag,
         openai: {
           synthese_volume: '',
           indicateurs_cles: [],
@@ -281,6 +295,7 @@ export async function lancerBlocVolumeAffaires(
     const resultat: ResultatVolumeAffaires = {
       collecteur,
       taxe_non_instituee: false,
+      diagnostic_epci: 'ok',
       openai: {
         synthese_volume: openaiData.synthese_volume ?? '',
         indicateurs_cles: openaiData.indicateurs_cles ?? [],

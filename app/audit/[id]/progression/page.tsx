@@ -659,6 +659,10 @@ export default function ProgressionPage() {
   const [validationBloc, setValidationBloc] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [segmentALance, setSegmentALance] = useState(false)
+  // Bloque la réouverture de la modale pendant le traitement d'un segment (B ou C)
+  const [segmentEnCours, setSegmentEnCours] = useState(false)
+  // Message d'erreur visible si le lancement d'un segment échoue
+  const [erreurSegment, setErreurSegment] = useState<string | null>(null)
 
   // Ref pour éviter de lancer le Segment A deux fois (StrictMode double render)
   const segmentALanceRef = useRef(false)
@@ -906,35 +910,75 @@ export default function ProgressionPage() {
   }
 
   // ── Ouverture automatique de la modale de validation ──
+  // Ne s'ouvre pas si un segment est déjà en cours de traitement (évite la boucle)
   useEffect(() => {
     const blocValidation = blocs.find(b => b.statut === 'en_attente_validation')
-    if (blocValidation && validationBloc === null) {
+    if (blocValidation && validationBloc === null && !segmentEnCours) {
       // Délai court pour laisser l'UI se mettre à jour visuellement
       const timer = setTimeout(() => ouvrirModalValidation(blocValidation.id), 400)
       return () => clearTimeout(timer)
     }
-  }, [blocs])
+    // Réinitialiser segmentEnCours quand plus aucun bloc n'est en_attente_validation
+    // (le segment a terminé ou a progressé vers en_cours/termine)
+    if (!blocValidation && segmentEnCours) {
+      setSegmentEnCours(false)
+    }
+  }, [blocs, segmentEnCours])
 
   // ── Confirmation keywords → déclenche Segment B ──
   async function handleConfirmKeywords(keywordsValides: KeywordClassifie[]) {
     setValidationBloc(null)
+    setSegmentEnCours(true)   // bloque la réouverture automatique de la modale
+    setErreurSegment(null)
 
-    fetch(`/api/orchestrateur/segment-b`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audit_id: id, keywords_valides: keywordsValides }),
-    }).catch(err => console.error('[progression] Erreur lancement Segment B :', err))
+    try {
+      const res = await fetch(`/api/orchestrateur/segment-b`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audit_id: id, keywords_valides: keywordsValides }),
+      })
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        const msg = (data as { error?: string }).error ?? `Erreur HTTP ${res.status}`
+        console.error('[progression] Segment B échoué :', msg)
+        setErreurSegment(`Impossible de lancer la Phase B : ${msg}`)
+        setSegmentEnCours(false)  // permet de réessayer
+      }
+      // Si ok → segmentEnCours reste true, réinitialisé par le useEffect quand le bloc progresse
+    } catch (err) {
+      console.error('[progression] Erreur réseau Segment B :', err)
+      setErreurSegment('Erreur réseau — vérifiez que le serveur est démarré et réessayez.')
+      setSegmentEnCours(false)
+    }
   }
 
   // ── Confirmation concurrents → déclenche Segment C ──
   async function handleConfirmConcurrents(concurrentsValides: ConcurrentIdentifie[]) {
     setValidationBloc(null)
+    setSegmentEnCours(true)   // bloque la réouverture automatique de la modale
+    setErreurSegment(null)
 
-    fetch(`/api/orchestrateur/segment-c`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audit_id: id, concurrents_valides: concurrentsValides }),
-    }).catch(err => console.error('[progression] Erreur lancement Segment C :', err))
+    try {
+      const res = await fetch(`/api/orchestrateur/segment-c`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audit_id: id, concurrents_valides: concurrentsValides }),
+      })
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        const msg = (data as { error?: string }).error ?? `Erreur HTTP ${res.status}`
+        console.error('[progression] Segment C échoué :', msg)
+        setErreurSegment(`Impossible de lancer l'analyse concurrents : ${msg}`)
+        setSegmentEnCours(false)
+      }
+      // Si ok → segmentEnCours reste true, réinitialisé par le useEffect quand le bloc progresse
+    } catch (err) {
+      console.error('[progression] Erreur réseau Segment C :', err)
+      setErreurSegment('Erreur réseau — vérifiez que le serveur est démarré et réessayez.')
+      setSegmentEnCours(false)
+    }
   }
 
   // ── Nom destination (depuis ref ou audit) ──
@@ -1018,6 +1062,25 @@ export default function ProgressionPage() {
             className="text-xs font-semibold px-3 py-1.5 bg-amber-600 text-white rounded hover:bg-amber-700 transition-colors"
           >
             Valider
+          </button>
+        </div>
+      )}
+
+      {/* Bandeau d'erreur segment B/C */}
+      {erreurSegment && (
+        <div className="flex items-start gap-3 p-4 mb-4 bg-red-50 border border-red-300 rounded-lg">
+          <svg viewBox="0 0 20 20" className="w-5 h-5 text-red-600 shrink-0 mt-0.5" fill="currentColor">
+            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+          </svg>
+          <div className="flex-1">
+            <p className="font-semibold text-red-800 text-sm">Lancement échoué</p>
+            <p className="text-red-700 text-xs mt-0.5">{erreurSegment}</p>
+          </div>
+          <button
+            onClick={() => { setErreurSegment(null); setSegmentEnCours(false) }}
+            className="text-xs font-semibold px-3 py-1.5 bg-red-600 text-white rounded hover:bg-red-700 transition-colors shrink-0"
+          >
+            Réessayer
           </button>
         </div>
       )}

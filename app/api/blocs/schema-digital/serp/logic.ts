@@ -148,7 +148,45 @@ export async function executerSERP({ destination }: { destination: string }): Pr
   )
 
   // ─── Fusion et déduplication de tous les résultats ────────────────────────
-  const tous_resultats = fusionnerEtDedupliquer(reponses.map((r) => r.top3))
+  let tous_resultats = fusionnerEtDedupliquer(reponses.map((r) => r.top3))
+
+  // ─── Retry si tous les résultats sont vides (probable rate-limit temporaire) ─
+  // On attend 3s puis on relance les 5 requêtes une deuxième fois
+  if (tous_resultats.length === 0) {
+    console.warn('[SERP] Tous les résultats sont vides — retry dans 3s')
+    await new Promise((res) => setTimeout(res, 3000))
+
+    const reponsesBis = await Promise.all(
+      requetes.map(({ cle, keyword }) =>
+        axios
+          .post<DataForSEOResponse>(
+            DATAFORSEO_URL,
+            [{ keyword, language_code: 'fr', location_code: 2250, depth: 10 }],
+            { auth, timeout: TIMEOUT_MS }
+          )
+          .then((res) => {
+            const items = res.data.tasks?.[0]?.result?.[0]?.items ?? []
+            return {
+              requete: cle,
+              keyword,
+              top3: extraireOrganiques(items, cle, 3),
+            } as RequeteResultat
+          })
+          .catch((err) => {
+            console.error(`[SERP] Retry — erreur requête "${keyword}" :`, err.message)
+            return { requete: cle, keyword, top3: [] } as RequeteResultat
+          })
+      )
+    )
+
+    const tous_resultats_bis = fusionnerEtDedupliquer(reponsesBis.map((r) => r.top3))
+    if (tous_resultats_bis.length > 0) {
+      return { par_requete: reponsesBis, tous_resultats: tous_resultats_bis }
+    }
+
+    // Retry également vide — throw pour que Bloc 3 soit marqué en erreur (visible dans les logs)
+    throw new Error('[SERP] 0 résultats après retry — DataForSEO temporairement indisponible')
+  }
 
   return {
     par_requete: reponses,

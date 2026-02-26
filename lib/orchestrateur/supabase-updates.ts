@@ -241,6 +241,51 @@ export async function lireBlocsStatuts(auditId: string): Promise<Partial<BlocsSt
   return (resultats.blocs_statuts as Partial<BlocsStatuts>) ?? {}
 }
 
+// ─── Sauvegarde / lecture de la bbox (prefetchée en Segment A) ───────────────
+
+/**
+ * Sauvegarde la bbox géographique dans audits.resultats.bbox.
+ * Appelé en Segment A juste après lireParamsAudit.
+ */
+export async function sauvegarderBbox(
+  auditId: string,
+  bbox: { ne_lat: number; ne_lng: number; sw_lat: number; sw_lng: number } | null
+): Promise<void> {
+  const supabase = getSupabase()
+
+  const { data: audit } = await supabase
+    .from('audits')
+    .select('resultats')
+    .eq('id', auditId)
+    .single()
+
+  const resultatsActuels = (audit?.resultats as Record<string, unknown>) ?? {}
+
+  await supabase
+    .from('audits')
+    .update({ resultats: { ...resultatsActuels, bbox } })
+    .eq('id', auditId)
+}
+
+/**
+ * Lit la bbox préalablement stockée dans audits.resultats.bbox.
+ * Retourne null si absente ou si le prefetch avait échoué.
+ */
+export async function lireBbox(
+  auditId: string
+): Promise<{ ne_lat: number; ne_lng: number; sw_lat: number; sw_lng: number } | null> {
+  const supabase = getSupabase()
+
+  const { data } = await supabase
+    .from('audits')
+    .select('resultats')
+    .eq('id', auditId)
+    .single()
+
+  const resultats = data?.resultats as Record<string, unknown> | null
+  return (resultats?.bbox as { ne_lat: number; ne_lng: number; sw_lat: number; sw_lng: number } | null) ?? null
+}
+
 // ─── Lecture du domaine OT détecté par le Bloc 3 ─────────────────────────────
 
 /**

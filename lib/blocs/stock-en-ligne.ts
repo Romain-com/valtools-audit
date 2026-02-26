@@ -101,13 +101,25 @@ export async function lancerBlocStockEnLigne(
   const debut = Date.now()
   const erreurs_partielles: string[] = []
 
-  // Étape 1 — Récupérer la bounding box de la commune
-  let bbox: BoundingBox
-  try {
-    bbox = await getBbox(params.code_insee)
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Erreur bbox'
-    throw new Error(`Impossible de récupérer la bbox pour ${params.code_insee} : ${msg}`)
+  // Étape 1 — Bounding box de la commune
+  // Priorité : bbox prefetchée en Segment A (via params.bbox)
+  // Fallback : appel direct au microservice si bbox non fournie dans les params
+  let bbox: BoundingBox | null = null
+  if (params.bbox !== undefined) {
+    // bbox fournie par le wrapper (peut être null si le microservice était indisponible en Segment A)
+    bbox = params.bbox
+    if (!bbox) {
+      erreurs_partielles.push('bbox: indisponible (microservice indisponible en Segment A) — Airbnb en mode nom de ville')
+    }
+  } else {
+    // Chemin legacy — appel direct au microservice
+    try {
+      bbox = await getBbox(params.code_insee)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erreur bbox'
+      console.warn(`[Bloc 6] bbox indisponible pour ${params.code_insee} — poursuite sans geo : ${msg}`)
+      erreurs_partielles.push(`bbox: ${msg} (scraping Airbnb en mode nom de ville)`)
+    }
   }
 
   // Étape 2 — Lancer le browser Playwright partagé

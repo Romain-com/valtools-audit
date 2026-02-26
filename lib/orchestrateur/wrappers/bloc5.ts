@@ -21,9 +21,9 @@ export async function lancerBloc5(params: ParamsAudit): Promise<ResultatBloc> {
   const hebergements = stocks?.hebergements as Record<string, unknown> | undefined
   const activites = stocks?.activites as Record<string, unknown> | undefined
   logInfo(params.audit_id, 'Bloc 5 — résultats reçus', 'bloc5', {
-    total_hebergements: hebergements?.total ?? null,
-    total_activites: activites?.total ?? null,
-    total_stock_physique: ((hebergements?.total as number) ?? 0) + ((activites?.total as number) ?? 0),
+    total_hebergements: hebergements?.total_unique ?? null,
+    total_activites: activites?.total_unique ?? null,
+    total_stock_physique: ((hebergements?.total_unique as number) ?? 0) + ((activites?.total_unique as number) ?? 0),
     source_donnee: r.source_donnee ?? null,
     cout_bloc: resultat.meta?.cout_total_euros ?? 0,
   })

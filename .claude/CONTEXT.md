@@ -1,5 +1,5 @@
 # CONTEXT.MD — Destination Digital Audit App
-> Dernière mise à jour : Migration Responses API + Fix parsing OpenAI (2026-02-26)
+> Dernière mise à jour : Correctifs Phase B + Volume d'affaires + Prefetch bbox Segment A (2026-02-26)
 > Destination de test de référence : **Annecy** | Domaine OT : `lac-annecy.com`
 
 ---
@@ -2126,6 +2126,69 @@ export function parseOpenAIResponse(data: unknown): string {
 - Sorties JSON simples (≤ 5 champs) : **500–1 000**
 - Sorties JSON moyennes (blocs structurés) : **1 000–2 000**
 - Sorties longues (batch keywords, liste concurrents) : **2 000–4 000**
+
+---
+
+### Correctifs audit Mégève — Phase B + Volume d'affaires + Stock en ligne (2026-02-26)
+
+#### Bug 1 — Phase B ne se lançait pas après validation keywords
+
+**Cause** : deux problèmes combinés dans `app/audit/[id]/progression/page.tsx`.
+
+1. `handleConfirmKeywords` utilisait un `fetch` fire-and-forget (non `await`) → les erreurs étaient silencieuses
+2. L'`useEffect` d'ouverture automatique de la modale se déclenchait à chaque tick de polling (~3s) pendant que Segment B tournait → double-trigger possible
+
+**Correction** :
+- Ajout de deux états : `segmentEnCours: boolean` (empêche la réouverture de la modale pendant l'exécution) et `erreurSegment: string | null` (affiche les erreurs réseau)
+- `handleConfirmKeywords` et `handleConfirmConcurrents` sont désormais `async/await` avec `try/catch`
+- Bannière d'erreur rouge affichée si le fetch échoue, avec bouton "Réessayer"
+- Même traitement appliqué à `handleConfirmConcurrents` pour Segment C
+
+#### Bug 2 — Volume d'affaires — diagnostic EPCI
+
+**Contexte** : pour les communes dont la taxe de séjour est collectée par l'EPCI (ex. Mégève → CC Pays du Mont-Blanc), le chemin commune + EPCI retournait 0 → `taxe_non_instituee: true` sans diagnostic.
+
+**Correction** dans `lib/blocs/volume-affaires.ts` et `types/volume-affaires.ts` :
+- Ajout du champ `diagnostic_epci?: 'epci_non_resolu' | 'epci_taxe_non_trouvee' | 'commune_taxe_non_trouvee' | 'ok'` dans `ResultatVolumeAffaires`
+- Log `console.warn` quand le SIREN EPCI n'est pas résolu
+- Le champ indique exactement quelle partie du chemin a échoué
+
+#### Bug 3 — Stock en ligne — getBbox non bloquant
+
+**Cause** : si le microservice était indisponible, `getBbox()` levait une exception non rattrapée et bloquait tout le Segment C.
+
+**Correction** dans `lib/blocs/stock-en-ligne.ts` :
+- `getBbox()` entouré d'un `try/catch` → `bbox = null` si indisponible
+- L'erreur est enregistrée dans `erreurs_partielles` (non bloquant)
+- Le scraper Airbnb passe en mode nom-de-ville si `bbox === null`
+
+**Correction dans `lib/scrapers/airbnb.ts`** :
+- Signature `bbox: BoundingBox` → `bbox: BoundingBox | null`
+- Ajout de `buildUrlAirbnbSansGeo()` (recherche par nom de ville sans coordonnées)
+- Si `bbox === null` → recherche mono-page sans découpage en quadrants
+
+#### Prefetch bbox en Segment A (suite Bug 3)
+
+**Objectif** : la bbox géographique est disponible dès le Segment A (via le microservice `localhost:3001/bbox`) pour qu'elle soit prête quand Segment C démarre.
+
+**Flux** :
+```
+Segment A  →  GET localhost:3001/bbox?code_insee=XXX  →  sauvegarderBbox(audit_id, bbox)
+                                                               ↓ (Supabase resultats.bbox)
+Segment C  →  lireBbox(audit_id)  →  params.bbox  →  scraperAirbnb(browser, bbox, destination)
+```
+
+**Fichiers modifiés** :
+
+| Fichier | Modification |
+|---------|-------------|
+| `types/stock-en-ligne.ts` | Ajout `bbox?: BoundingBox \| null` dans `ParamsBloc6` |
+| `lib/orchestrateur/supabase-updates.ts` | Ajout `sauvegarderBbox()` et `lireBbox()` (lit/écrit `resultats.bbox`) |
+| `app/api/orchestrateur/segment-a/route.ts` | Appel `GET /bbox` après `lireParamsAudit` + `sauvegarderBbox` si succès (rien si échec — le Segment C retentera) |
+| `lib/orchestrateur/wrappers/bloc6.ts` | Lecture `lireBbox(audit_id)` avant `lancerBlocStockEnLigne` ; si null → `bbox` non passée dans params (le fallback microservice de stock-en-ligne.ts est déclenché) |
+| `lib/blocs/stock-en-ligne.ts` | Utilise `params.bbox` si fourni ; fallback appel direct microservice si `params.bbox === undefined` |
+
+**Règle** : on ne sauvegarde jamais `null` en Supabase. Si le microservice est indisponible en Segment A → rien sauvegardé → Segment C retentera directement le microservice.
 
 ---
 

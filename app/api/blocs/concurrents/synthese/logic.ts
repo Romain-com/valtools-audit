@@ -81,7 +81,7 @@ Retourne UNIQUEMENT un JSON valide (max 3 points_forts et 3 points_faibles) :
     {
       model: 'gpt-5-mini',
       input: promptUser,
-      max_output_tokens: 1000,
+      max_output_tokens: 3000,
       reasoning: { effort: 'low' },
     },
     {

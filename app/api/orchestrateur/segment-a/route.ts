@@ -16,14 +16,16 @@ import { lancerBloc4PhaseA } from '@/lib/orchestrateur/wrappers/bloc4'
 import { logInfo, logError } from '@/lib/orchestrateur/logger'
 import {
   mettreAJourBloc,
-  mettreAJourStatutAudit,
   lireParamsAudit,
   lireDomaineOT,
   initialiserBlocsStatutsEnBase,
   lireBlocsStatuts,
+  sauvegarderBbox,
 } from '@/lib/orchestrateur/supabase-updates'
 import { initialiserBlocsStatuts } from '@/lib/orchestrateur/blocs-statuts'
 import { createClient } from '@supabase/supabase-js'
+
+const MICROSERVICE_URL = process.env.DATA_TOURISME_API_URL ?? 'http://localhost:3001'
 
 function getSupabase() {
   const url = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -71,6 +73,25 @@ export async function POST(req: NextRequest) {
 
     // ── Lecture des paramètres de la destination ───────────────────────────────
     const params = await lireParamsAudit(audit_id)
+
+    // ── Prefetch bbox via microservice — stockée en Supabase pour le Segment C ──
+    // Non bloquant : si le microservice est indisponible, on sauvegarde null
+    // et Airbnb passera en mode nom de ville lors du Segment C
+    try {
+      const bboxRes = await fetch(
+        `${MICROSERVICE_URL}/bbox?code_insee=${params.code_insee}`,
+        { cache: 'no-store' }
+      )
+      if (bboxRes.ok) {
+        const bboxData = await bboxRes.json() as { bbox: { ne_lat: number; ne_lng: number; sw_lat: number; sw_lng: number } }
+        await sauvegarderBbox(audit_id, bboxData.bbox)
+        await logInfo(audit_id, 'bbox prefetchée depuis microservice', 'orchestrateur', { code_insee: params.code_insee })
+      } else {
+        console.warn(`[segment-a] bbox indisponible pour ${params.code_insee} — HTTP ${bboxRes.status} — le Segment C retentera`)
+      }
+    } catch (err) {
+      console.warn(`[segment-a] bbox non récupérée :`, err instanceof Error ? err.message : err, '— le Segment C retentera')
+    }
 
     // ── Init blocs_statuts — tous 'en_attente' ─────────────────────────────────
     await initialiserBlocsStatutsEnBase(audit_id, initialiserBlocsStatuts())

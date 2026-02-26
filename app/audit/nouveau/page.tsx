@@ -130,11 +130,24 @@ export default function NouvelAuditPage() {
     }
     setSearchLoading(true)
     try {
-      const baseUrl = process.env.NEXT_PUBLIC_DATA_TOURISME_API_URL || 'http://localhost:3001'
-      const res = await fetch(`${baseUrl}/communes?nom=${encodeURIComponent(q)}`)
+      // Proxy Next.js — évite les problèmes CORS (le microservice n'expose pas de headers CORS)
+      const res = await fetch(`/api/communes?nom=${encodeURIComponent(q)}`)
       if (res.ok) {
         const data = await res.json()
-        setSuggestions(data.slice(0, 8))
+        // Le microservice retourne { resultats: [...] } avec des champs snake_case
+        // → normalisation vers l'interface Commune (camelCase)
+        const resultats: Commune[] = (data.resultats ?? []).slice(0, 8).map(
+          (c: { nom: string; siren?: string; code_insee?: string; code_postal?: string; code_departement?: string; code_region?: string; population?: number }) => ({
+            nom: c.nom,
+            siren: c.siren,
+            code: c.code_insee ?? '',
+            codesPostaux: c.code_postal ? [c.code_postal] : [],
+            codeDepartement: c.code_departement ?? '',
+            codeRegion: c.code_region ?? '',
+            population: c.population ?? 0,
+          })
+        )
+        setSuggestions(resultats)
         setShowSuggestions(true)
       } else {
         // Microservice down — l'erreur est visible dans le panneau health check

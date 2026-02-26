@@ -4,7 +4,7 @@
 
 import { lancerBlocStockEnLigne } from '@/lib/blocs/stock-en-ligne'
 import type { ParamsAudit, ResultatBloc } from '../blocs-statuts'
-import { lireResultatsBloc } from '../supabase-updates'
+import { lireResultatsBloc, lireBbox } from '../supabase-updates'
 import { logInfo } from '../logger'
 
 /**
@@ -20,19 +20,28 @@ export async function lancerBloc6(params: ParamsAudit): Promise<ResultatBloc> {
   try {
     const bloc5 = await lireResultatsBloc(params.audit_id, 'stocks_physiques') as {
       stocks?: {
-        hebergements?: { total: number }
-        activites?: { total: number }
+        hebergements?: { total_unique: number }
+        activites?: { total_unique: number }
       }
     } | null
 
     if (bloc5?.stocks) {
       stocks_bloc5 = {
-        hebergements_total: bloc5.stocks.hebergements?.total ?? 0,
-        activites_total: bloc5.stocks.activites?.total ?? 0,
+        hebergements_total: bloc5.stocks.hebergements?.total_unique ?? 0,
+        activites_total: bloc5.stocks.activites?.total_unique ?? 0,
       }
     }
   } catch {
     // Fallback silencieux — les indicateurs croisés seront à 0
+  }
+
+  // Lecture de la bbox prefetchée en Segment A
+  // Si absente (microservice était down en Segment A), stock-en-ligne.ts retentera directement
+  let bbox_prefetchee: { ne_lat: number; ne_lng: number; sw_lat: number; sw_lng: number } | null = null
+  try {
+    bbox_prefetchee = await lireBbox(params.audit_id)
+  } catch {
+    // Fallback silencieux
   }
 
   const resultat = await lancerBlocStockEnLigne(
@@ -41,6 +50,8 @@ export async function lancerBloc6(params: ParamsAudit): Promise<ResultatBloc> {
       code_insee: params.code_insee,
       domaine_ot,
       audit_id: params.audit_id,
+      // Si null (rien de sauvegardé en Segment A), on passe undefined → fallback microservice dans stock-en-ligne.ts
+      ...(bbox_prefetchee !== null ? { bbox: bbox_prefetchee } : {}),
     },
     stocks_bloc5
   )

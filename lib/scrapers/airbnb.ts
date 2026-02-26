@@ -32,6 +32,21 @@ function buildUrlAirbnb(zone: BoundingBox, destination: string): string {
 }
 
 /**
+ * Construit l'URL Airbnb sans coordonnées géographiques (fallback si bbox indisponible)
+ * Moins précis — cherche par nom de ville uniquement
+ */
+function buildUrlAirbnbSansGeo(destination: string): string {
+  const params = new URLSearchParams({
+    refinement_paths: '/homes',
+    query: destination.toLowerCase(),
+    search_mode: 'regular_search',
+    price_filter_input_type: '2',
+    channel: 'EXPLORE',
+  })
+  return `https://www.airbnb.fr/s/${encodeURIComponent(destination)}/homes?${params}`
+}
+
+/**
  * Parse un texte et extrait un nombre (ex: "1 234 logements" → 1234)
  * Retourne null si pas de nombre trouvé
  */
@@ -182,11 +197,13 @@ async function compterZoneAirbnb(
 }
 
 /**
- * Scrape Airbnb pour compter les annonces hébergement sur la commune
+ * Scrape Airbnb pour compter les annonces hébergement sur la commune.
+ * @param bbox - Coordonnées géographiques de la commune. Si null (microservice indisponible),
+ *               la recherche se fait par nom de ville uniquement (moins précis, pas de découpage récursif).
  */
 export async function scraperAirbnb(
   browser: Browser,
-  bbox: BoundingBox,
+  bbox: BoundingBox | null,
   destination: string
 ): Promise<ResultatAirbnb> {
   const debut = Date.now()
@@ -209,7 +226,22 @@ export async function scraperAirbnb(
   const page = await context.newPage()
 
   try {
-    const total_annonces = await compterZoneAirbnb(page, bbox, destination)
+    let total_annonces: number
+
+    if (bbox) {
+      // Mode normal — recherche géographique avec découpage récursif
+      total_annonces = await compterZoneAirbnb(page, bbox, destination)
+    } else {
+      // Mode fallback — bbox indisponible, recherche par nom de ville uniquement (page unique)
+      console.warn('[Airbnb] Mode fallback sans bbox — résultat estimatif')
+      await page.goto(buildUrlAirbnbSansGeo(destination), {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000,
+      })
+      compteurRequetes++
+      await page.waitForTimeout(2500)
+      total_annonces = await extraireNombreAirbnb(page)
+    }
 
     return {
       total_annonces,

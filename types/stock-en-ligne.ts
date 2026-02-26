@@ -4,10 +4,11 @@
 // ─── Paramètres d'entrée ──────────────────────────────────────────────────────
 
 export interface ParamsBloc6 {
-  destination: string    // ex: "Annecy"
-  code_insee: string     // ex: "74010"
-  domaine_ot: string     // ex: "lac-annecy.com"
+  destination: string           // ex: "Annecy"
+  code_insee: string            // ex: "74010"
+  domaine_ot: string            // ex: "lac-annecy.com"
   audit_id: string
+  bbox?: BoundingBox | null     // prefetchée en Segment A — si null, appel microservice en fallback
 }
 
 // ─── Bounding Box ─────────────────────────────────────────────────────────────
@@ -47,7 +48,7 @@ export interface ResultatAirbnb {
   total_annonces: number
   nb_requetes: number
   nb_zones: number
-  bbox_utilisee: BoundingBox
+  bbox_utilisee: BoundingBox | null  // null si le microservice bbox était indisponible (mode nom de ville)
   duree_ms: number
   erreur?: string
 }

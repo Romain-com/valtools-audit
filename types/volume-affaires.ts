@@ -22,6 +22,7 @@ export interface ResultatVolumeAffaires {
     raisonnement: string
   }
   taxe_non_instituee: boolean
+  diagnostic_epci?: 'epci_non_resolu' | 'epci_taxe_non_trouvee' | 'commune_taxe_non_trouvee' | 'ok'
   dispatch_ts?: ResultatDispatchTS   // enrichissement Mélodi (optionnel)
   openai: {
     synthese_volume: string      // 80-100 mots pour GDoc
