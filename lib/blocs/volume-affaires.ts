@@ -119,6 +119,8 @@ export async function lancerBlocVolumeAffaires(
 
     const siren_epci = epciData.siren_epci ?? null
 
+    console.log(`[Bloc 2] ${destination} — siren_commune=${siren_commune} | code_insee=${code_insee} | siren_epci=${siren_epci ?? 'aucun'}`)
+
     // ─── Étape 2 : taxes en parallèle (commune + EPCI si disponible) ───────
     const [taxeCommune, taxeEpci] = await Promise.all([
       executerTaxe({ siren: siren_commune, type_collecteur: 'commune' }),
@@ -126,6 +128,8 @@ export async function lancerBlocVolumeAffaires(
         ? executerTaxe({ siren: siren_epci, type_collecteur: 'epci' })
         : Promise.resolve(null),
     ])
+
+    console.log(`[Bloc 2] taxe commune=${taxeCommune.montant_taxe_euros}€ | taxe EPCI=${taxeEpci?.montant_taxe_euros ?? 'non cherché'}€`)
 
     // ─── Étape 3 : sélection du collecteur ─────────────────────────────────
     // Priorité : commune si elle a des données, sinon EPCI, sinon taxe non instituée

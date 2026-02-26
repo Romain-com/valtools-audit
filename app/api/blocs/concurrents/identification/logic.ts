@@ -1,11 +1,13 @@
 // Logique métier — concurrents/identification
-// Identifie 5 destinations concurrentes via GPT-4o-mini à partir du contexte complet de l'audit
+// Identifie 5 destinations concurrentes via GPT-5-mini (Responses API) à partir du contexte complet de l'audit
 // ⚠️ Serveur uniquement — aucune clé API exposée côté client
 
 import axios from 'axios'
+import { parseOpenAIResponse } from '@/lib/openai-parse'
 import type { ContexteAuditPourConcurrents, ConcurrentIdentifie } from '@/types/concurrents'
 
-const OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
+// URL de l'API OpenAI — Responses API
+const OPENAI_URL = 'https://api.openai.com/v1/responses'
 
 /**
  * Identifie 6 concurrents via OpenAI, filtre les sous-destinations et retourne au max 5.
@@ -27,7 +29,9 @@ export async function executerIdentificationConcurrents({
   const nuitees = volume_affaires.nuitees_estimees.toLocaleString('fr-FR')
   const top3 = visibilite_seo.top_3_keywords.join(', ')
 
-  const promptUser = `Tu es expert en tourisme français. En analysant ces données d'audit, identifie les 6 destinations françaises les plus pertinentes à comparer avec ${destination} (6 pour avoir un choix après filtrage).
+  const promptUser = `Tu es expert en tourisme et stratégie digitale des destinations françaises. Réponds UNIQUEMENT avec un JSON valide, sans markdown, sans commentaires.
+
+En analysant ces données d'audit, identifie les 6 destinations françaises les plus pertinentes à comparer avec ${destination} (6 pour avoir un choix après filtrage).
 
 Critères de sélection à appliquer simultanément :
 1. GÉOGRAPHIQUE : même région ou bassin touristique (Alpes, Côte d'Azur, Bretagne...)
@@ -67,27 +71,20 @@ Retourne UNIQUEMENT un JSON valide :
     OPENAI_URL,
     {
       model: 'gpt-5-mini',
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Tu es expert en tourisme et stratégie digitale des destinations françaises. Réponds UNIQUEMENT avec un JSON valide, sans markdown, sans commentaires.',
-        },
-        { role: 'user', content: promptUser },
-      ],
-      temperature: 0.2,
-      max_tokens: 1200,
+      input: promptUser,
+      max_output_tokens: 2000,
+      reasoning: { effort: 'low' },
     },
     {
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      timeout: 60_000,
+      timeout: 180_000,
     }
   )
 
-  const brut = reponse.data.choices?.[0]?.message?.content ?? ''
+  const brut = parseOpenAIResponse(reponse.data)
   const parsed = JSON.parse(brut.replace(/```json\n?|```/g, '').trim())
 
   // Normalisation pour la comparaison (sans accents, minuscules)

@@ -26,22 +26,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Données commune incomplètes' }, { status: 400 })
     }
 
-    const supabase = await createServiceClient()
-
-    // ── 1. Résolution SIREN via microservice si absent ────────────────────────
-    let siren = commune.siren || ''
-    if (!siren) {
-      try {
-        const baseUrl = process.env.DATA_TOURISME_API_URL || 'http://localhost:3001'
-        const res = await fetch(`${baseUrl}/siren?insee=${commune.code}`)
-        if (res.ok) {
-          const data = await res.json()
-          siren = data.siren || ''
-        }
-      } catch {
-        // SIREN optionnel — on continue sans
-      }
+    // ── Validation SIREN — doit être un vrai SIREN à 9 chiffres issu du CSV ──
+    const siren = commune.siren || ''
+    if (!/^\d{9}$/.test(siren)) {
+      return NextResponse.json(
+        { error: 'SIREN invalide — le microservice local doit être démarré' },
+        { status: 400 }
+      )
     }
+
+    const supabase = await createServiceClient()
 
     // Slug depuis le nom de la commune
     const slug = commune.nom
@@ -54,7 +48,7 @@ export async function POST(request: NextRequest) {
     // ── 2. UPSERT destination ─────────────────────────────────────────────────
     const destinationData = {
       nom: commune.nom,
-      siren: siren || `insee-${commune.code}`, // Fallback si SIREN absent
+      siren,
       code_insee: commune.code,
       code_postal: commune.codesPostaux?.[0] || '',
       code_departement: commune.codeDepartement,

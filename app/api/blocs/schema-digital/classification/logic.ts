@@ -5,10 +5,11 @@
 // ⚠️  Serveur uniquement — aucune clé API exposée côté client
 
 import axios from 'axios'
+import { parseOpenAIResponse } from '@/lib/openai-parse'
 import type { CategorieResultatSERP, SiteOfficiel, VisibiliteParIntention } from '@/types/schema-digital'
 
-// URL de l'API OpenAI
-const OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
+// URL de l'API OpenAI — Responses API
+const OPENAI_URL = 'https://api.openai.com/v1/responses'
 
 // ─── Types internes ───────────────────────────────────────────────────────────
 
@@ -78,7 +79,7 @@ export async function executerClassification({
     throw new Error('Variable OPENAI_API_KEY manquante')
   }
 
-  // Tronquer les champs pour réduire la taille du prompt et éviter le dépassement de max_tokens
+  // Tronquer les champs pour réduire la taille du prompt et éviter le dépassement de max_output_tokens
   const resumeTous = tous_resultats.map((r) => ({
     domaine: r.domaine,
     titre: r.titre.slice(0, 80),
@@ -93,7 +94,9 @@ export async function executerClassification({
     })
     .join('\n')
 
-  const promptUtilisateur = `Destination auditée : ${destination}
+  const promptUtilisateur = `Tu es expert en marketing digital touristique français. Réponds UNIQUEMENT avec un JSON valide, sans markdown, sans commentaires.
+
+Destination auditée : ${destination}
 
 RÉSULTATS PAR INTENTION DE RECHERCHE (top 3 par requête) :
 ${resumeParIntention}
@@ -138,27 +141,20 @@ Réponds avec ce JSON exact :
       OPENAI_URL,
       {
         model: 'gpt-5-mini',
-        messages: [
-          {
-            role: 'system',
-            content:
-              'Tu es expert en marketing digital touristique français. Réponds UNIQUEMENT avec un JSON valide, sans markdown, sans commentaires.',
-          },
-          { role: 'user', content: promptUtilisateur },
-        ],
-        temperature: 0.1,
-        max_tokens: 1500,
+        input: promptUtilisateur,
+        max_output_tokens: 2000,
+        reasoning: { effort: 'low' },
       },
       {
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
-        timeout: 30_000,
+        timeout: 180_000,
       }
     )
 
-    const brut = response.data.choices?.[0]?.message?.content ?? ''
+    const brut = parseOpenAIResponse(response.data)
     const parsed = JSON.parse(brut.replace(/```json\n?|```/g, '').trim()) as ReponseOpenAI
 
     // Refiltre de sécurité — top3_officiels doit commencer par "officiel_"

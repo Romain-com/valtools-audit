@@ -1,12 +1,14 @@
 // Logique métier — concurrents/synthese
-// Génère la synthèse comparative via GPT-4o-mini
+// Génère la synthèse comparative via GPT-5-mini (Responses API)
 // Input : tableau comparatif destination cible vs concurrents validés
 // ⚠️ Serveur uniquement — aucune clé API exposée côté client
 
 import axios from 'axios'
+import { parseOpenAIResponse } from '@/lib/openai-parse'
 import type { TableauComparatif } from '@/types/concurrents'
 
-const OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
+// URL de l'API OpenAI — Responses API
+const OPENAI_URL = 'https://api.openai.com/v1/responses'
 
 /**
  * Génère la synthèse comparative benchmarking via OpenAI.
@@ -45,7 +47,9 @@ export async function executerSyntheseConcurrents({
     ? `\nKEYWORDS MANQUANTS vs CONCURRENTS (source Haloscan siteCompetitors) :\n${insight_gap}\n`
     : ''
 
-  const promptUser = `Tu es expert en tourisme digital français. Analyse le positionnement de ${destination} face à ses concurrents.
+  const promptUser = `Tu es expert en tourisme et stratégie digitale des destinations françaises. Réponds UNIQUEMENT avec un JSON valide, sans markdown, sans commentaires.
+
+Analyse le positionnement de ${destination} face à ses concurrents.
 
 DESTINATION CIBLE : ${destination}
 - Keywords SEO : ${destination_cible.total_keywords.toLocaleString('fr-FR')}
@@ -76,26 +80,19 @@ Retourne UNIQUEMENT un JSON valide (max 3 points_forts et 3 points_faibles) :
     OPENAI_URL,
     {
       model: 'gpt-5-mini',
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Tu es expert en tourisme et stratégie digitale des destinations françaises. Réponds UNIQUEMENT avec un JSON valide, sans markdown, sans commentaires.',
-        },
-        { role: 'user', content: promptUser },
-      ],
-      temperature: 0.2,
-      max_tokens: 800,
+      input: promptUser,
+      max_output_tokens: 1000,
+      reasoning: { effort: 'low' },
     },
     {
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      timeout: 45_000,
+      timeout: 180_000,
     }
   )
 
-  const brut = reponse.data.choices?.[0]?.message?.content ?? ''
+  const brut = parseOpenAIResponse(reponse.data)
   return JSON.parse(brut.replace(/```json\n?|```/g, '').trim())
 }

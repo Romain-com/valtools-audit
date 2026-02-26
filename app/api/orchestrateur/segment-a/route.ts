@@ -18,6 +18,7 @@ import {
   mettreAJourBloc,
   mettreAJourStatutAudit,
   lireParamsAudit,
+  lireDomaineOT,
   initialiserBlocsStatutsEnBase,
   lireBlocsStatuts,
 } from '@/lib/orchestrateur/supabase-updates'
@@ -149,7 +150,14 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    // ── Recharger les params avec domaine_ot maintenant disponible ──────────────
+    // ── Lire domaine_ot APRÈS sauvegarde Bloc 3 ────────────────────────────────
+    const domaine_ot = await lireDomaineOT(audit_id)
+    await logInfo(audit_id, 'domaine_ot résolu après Bloc 3', 'orchestrateur', {
+      domaine_ot,
+      source: domaine_ot ? 'bloc3_detecte' : 'null — OT non détecté dans le SERP',
+    })
+
+    // ── Recharger les params complets avec domaine_ot maintenant disponible ───
     const paramsAvecDomaine = await lireParamsAudit(audit_id)
 
     // ─────────────────────────────────────────────────────────────────────────────

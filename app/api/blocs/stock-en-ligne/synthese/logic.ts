@@ -1,8 +1,9 @@
 // Logique métier — stock-en-ligne/synthese
-// Génère via GPT-4o-mini la synthèse de la commercialisation en ligne (Bloc 6)
+// Génère via GPT-5-mini (Responses API) la synthèse de la commercialisation en ligne (Bloc 6)
 // Input : données brutes des 4 sources + indicateurs calculés
 
 import axios from 'axios'
+import { parseOpenAIResponse } from '@/lib/openai-parse'
 import type {
   ResultatSiteOT,
   ResultatAirbnb,
@@ -12,7 +13,8 @@ import type {
   SyntheseBloc6,
 } from '@/types/stock-en-ligne'
 
-const OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
+// URL de l'API OpenAI — Responses API
+const OPENAI_URL = 'https://api.openai.com/v1/responses'
 
 /**
  * Génère la synthèse de la commercialisation en ligne via OpenAI.
@@ -41,7 +43,7 @@ export async function executerSyntheseStockEnLigne({
   const formatPct = (v: number | null): string =>
     v !== null ? `${v}%` : 'N/A (données bloc 5 manquantes)'
 
-  const promptUser = `Tu es expert en tourisme digital français. Analyse les données de commercialisation en ligne de cette destination.
+  const promptUser = `Tu es expert en tourisme digital français. Analyse les données de commercialisation en ligne de cette destination. Réponds UNIQUEMENT avec un JSON valide, sans markdown, sans commentaires.
 
 Destination : ${destination}
 Site OT : ${domaine_ot}
@@ -81,27 +83,20 @@ Réponds UNIQUEMENT avec ce JSON valide (sans markdown) :
     OPENAI_URL,
     {
       model: 'gpt-5-mini',
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Tu es expert en tourisme et transformation digitale des destinations françaises. Réponds UNIQUEMENT avec un JSON valide, sans markdown, sans commentaires.',
-        },
-        { role: 'user', content: promptUser },
-      ],
-      temperature: 0.2,
-      max_tokens: 600,
+      input: promptUser,
+      max_output_tokens: 1000,
+      reasoning: { effort: 'low' },
     },
     {
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      timeout: 45000,
+      timeout: 180_000,
     }
   )
 
-  const brut = reponse.data.choices?.[0]?.message?.content ?? ''
+  const brut = parseOpenAIResponse(reponse.data)
   const parsed: SyntheseBloc6 = JSON.parse(brut.replace(/```json\n?|```/g, '').trim())
 
   return {

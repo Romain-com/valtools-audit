@@ -4,11 +4,12 @@
 // ⚠️  Serveur uniquement — aucune clé API exposée côté client
 
 import axios from 'axios'
+import { parseOpenAIResponse } from '@/lib/openai-parse'
 import { API_COSTS } from '@/lib/api-costs'
 import type { SiteOfficiel, ResultatHaloscan, ResultatPageSpeed } from '@/types/schema-digital'
 
-// URL de l'API OpenAI
-const OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
+// URL de l'API OpenAI — Responses API
+const OPENAI_URL = 'https://api.openai.com/v1/responses'
 
 // ─── Helpers de formatage pour le prompt ──────────────────────────────────────
 
@@ -75,7 +76,9 @@ export async function executerOpenAISchemaDigital({
   // Formatage des données PageSpeed
   const resumePageSpeedTexte = (pagespeed ?? []).map(resumePageSpeed).join('\n') || 'Données techniques non disponibles'
 
-  const promptUtilisateur = `Destination : ${destination}
+  const promptUtilisateur = `Tu es expert en audit digital pour les destinations touristiques françaises. Réponds UNIQUEMENT avec un JSON valide, sans markdown, sans commentaires.
+
+Destination : ${destination}
 
 SERP Google :
 - ${nb_sites_officiels_top10 ?? 0} sites officiels dans le Top 10
@@ -103,27 +106,20 @@ JSON attendu :
       OPENAI_URL,
       {
         model: 'gpt-5-mini',
-        messages: [
-          {
-            role: 'system',
-            content:
-              "Tu es expert en audit digital pour les destinations touristiques françaises. Réponds UNIQUEMENT avec un JSON valide, sans markdown, sans commentaires.",
-          },
-          { role: 'user', content: promptUtilisateur },
-        ],
-        temperature: 0.2,
-        max_tokens: 500,
+        input: promptUtilisateur,
+        max_output_tokens: 1000,
+        reasoning: { effort: 'low' },
       },
       {
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
-        timeout: 30_000,
+        timeout: 180_000,
       }
     )
 
-    const brut = response.data.choices?.[0]?.message?.content ?? ''
+    const brut = parseOpenAIResponse(response.data)
     const parsed = JSON.parse(brut.replace(/```json\n?|```/g, '').trim())
 
     return {

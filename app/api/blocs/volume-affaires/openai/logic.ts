@@ -1,12 +1,14 @@
 // Logique métier — génération OpenAI pour le Bloc 2 Volume d'affaires
-// Génère via GPT-4o-mini : synthèse volume d'affaires + 3 indicateurs clés
+// Génère via GPT-5-mini (Responses API) : synthèse volume d'affaires + 3 indicateurs clés
 // Si EPCI : estime aussi la part de la commune dans le total intercommunal
 // Extrait de route.ts pour permettre l'import direct depuis l'orchestrateur (évite les appels auto-référentiels)
 
 import axios from 'axios'
+import { parseOpenAIResponse } from '@/lib/openai-parse'
 import type { DonneesCollecteur } from '@/types/volume-affaires'
 
-const OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
+// URL de l'API OpenAI — Responses API
+const OPENAI_URL = 'https://api.openai.com/v1/responses'
 
 /**
  * Génère la synthèse volume d'affaires et les indicateurs clés via OpenAI.
@@ -42,7 +44,9 @@ export async function executerOpenAIVolumeAffaires({
   let promptUser: string
 
   if (est_epci) {
-    promptUser = `Destination auditée : ${destination}
+    promptUser = `Tu es expert en finances locales françaises et tourisme. Réponds UNIQUEMENT avec un JSON valide, sans markdown, sans commentaires.
+
+Destination auditée : ${destination}
 La taxe de séjour est collectée par ${collecteur.nom} (${collecteur.type_epci}).
 Montant total EPCI : ${montantFormate}€ en ${collecteur.annee_donnees}.
 Nuitées estimées EPCI (taux moyen national 1,50€/nuit) : ${nuiteesFormatees}.
@@ -62,7 +66,9 @@ Réponds avec ce JSON exact :
   "indicateurs_cles": ["chiffre 1", "chiffre 2", "chiffre 3"]
 }`
   } else {
-    promptUser = `Destination : ${destination}
+    promptUser = `Tu es expert en finances locales françaises et tourisme. Réponds UNIQUEMENT avec un JSON valide, sans markdown, sans commentaires.
+
+Destination : ${destination}
 Montant taxe de séjour collectée : ${montantFormate}€ en ${collecteur.annee_donnees}.
 Nuitées estimées (taux moyen national 1,50€/nuit) : ${nuiteesFormatees}.
 
@@ -79,27 +85,20 @@ Réponds avec ce JSON exact :
     OPENAI_URL,
     {
       model: 'gpt-5-mini',
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Tu es expert en finances locales françaises et tourisme. Réponds UNIQUEMENT avec un JSON valide, sans markdown, sans commentaires.',
-        },
-        { role: 'user', content: promptUser },
-      ],
-      temperature: 0.2,
-      max_tokens: 500,
+      input: promptUser,
+      max_output_tokens: 1000,
+      reasoning: { effort: 'low' },
     },
     {
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      timeout: 30000,
+      timeout: 180_000,
     }
   )
 
-  const brut = reponse.data.choices?.[0]?.message?.content ?? ''
+  const brut = parseOpenAIResponse(reponse.data)
   const parsed = JSON.parse(brut.replace(/```json\n?|```/g, '').trim())
 
   return parsed

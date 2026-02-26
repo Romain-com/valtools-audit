@@ -113,7 +113,7 @@ export async function mettreAJourStatutAudit(
 
   const { error } = await supabase
     .from('audits')
-    .update({ statut, updated_at: new Date().toISOString() })
+    .update({ statut })
     .eq('id', auditId)
 
   if (error) {
@@ -239,6 +239,28 @@ export async function lireBlocsStatuts(auditId: string): Promise<Partial<BlocsSt
 
   const resultats = (data.resultats as Record<string, unknown>) ?? {}
   return (resultats.blocs_statuts as Partial<BlocsStatuts>) ?? {}
+}
+
+// ─── Lecture du domaine OT détecté par le Bloc 3 ─────────────────────────────
+
+/**
+ * Lit le domaine_ot depuis resultats.schema_digital.domaine_ot_detecte.
+ * À appeler après la fin du Bloc 3 pour enrichir les paramètres des blocs suivants.
+ */
+export async function lireDomaineOT(auditId: string): Promise<string | null> {
+  const supabase = getSupabase()
+
+  const { data } = await supabase
+    .from('audits')
+    .select('resultats')
+    .eq('id', auditId)
+    .single()
+
+  if (!data) return null
+
+  const resultats = data.resultats as Record<string, unknown>
+  const schemaDigital = resultats?.schema_digital as Record<string, unknown> | undefined
+  return (schemaDigital?.domaine_ot_detecte as string | null) ?? null
 }
 
 // ─── Initialisation blocs_statuts ────────────────────────────────────────────

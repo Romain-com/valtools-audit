@@ -1,6 +1,7 @@
-// Segment B — Bloc 4 Phase B → Bloc 5 → Bloc 6 → Bloc 7 Phase A
-// Déclenché après validation des keywords (Bloc 4 Phase B)
+// Segment B — Bloc 4 Phase B → Bloc 5 → Bloc 7 Phase A
+// Déclenché après validation des keywords (Bloc 4 Phase A)
 // Se termine en statut 'en_attente_validation' sur le Bloc 7
+// ⚠️ Bloc 6 (Playwright / stock en ligne) est exécuté dans le Segment C
 //
 // ⚠️ runtime 'nodejs' obligatoire — Bloc 6 utilise Playwright
 // ⚠️ maxDuration = 300 — les blocs peuvent prendre jusqu'à 5 min au total
@@ -11,7 +12,6 @@ export const maxDuration = 300
 import { NextRequest, NextResponse } from 'next/server'
 import { lancerBloc4PhaseB } from '@/lib/orchestrateur/wrappers/bloc4'
 import { lancerBloc5 } from '@/lib/orchestrateur/wrappers/bloc5'
-import { lancerBloc6 } from '@/lib/orchestrateur/wrappers/bloc6'
 import { lancerBloc7PhaseA } from '@/lib/orchestrateur/wrappers/bloc7'
 import { logInfo, logError } from '@/lib/orchestrateur/logger'
 import {
@@ -98,29 +98,6 @@ export async function POST(req: NextRequest) {
         error: err instanceof Error ? err.message : String(err),
         stack: err instanceof Error ? err.stack : undefined,
         params: { destination: params.nom, code_insee: params.code_insee },
-      })
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // BLOC 6 — Stock en ligne (Playwright)
-    // ─────────────────────────────────────────────────────────────────────────────
-    await logInfo(audit_id, 'Bloc 6 démarré', 'bloc6')
-    await mettreAJourBloc(audit_id, 'bloc6', 'en_cours')
-
-    const debut6 = Date.now()
-    try {
-      const resultat6 = await lancerBloc6(params)
-      await mettreAJourBloc(audit_id, 'bloc6', 'termine', resultat6.resultats, resultat6.couts)
-      await logInfo(audit_id, 'Bloc 6 terminé', 'bloc6', {
-        duree_ms: Date.now() - debut6,
-        cout: resultat6.couts.total,
-      })
-    } catch (err) {
-      await mettreAJourBloc(audit_id, 'bloc6', 'erreur')
-      await logError(audit_id, 'Bloc 6 échoué', 'bloc6', {
-        error: err instanceof Error ? err.message : String(err),
-        stack: err instanceof Error ? err.stack : undefined,
-        params: { destination: params.nom, domaine_ot: params.domaine_ot },
       })
     }
 

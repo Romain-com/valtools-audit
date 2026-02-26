@@ -3,22 +3,17 @@
 // Importé directement par l'orchestrateur pour éviter les appels HTTP auto-référentiels
 
 import axios from 'axios'
+import { parseOpenAIResponse } from '@/lib/openai-parse'
 import { API_COSTS } from '@/lib/api-costs'
 import type { POIBrut, POISelectionne } from '@/types/positionnement'
 
-// URL de l'API OpenAI
-const OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
+// URL de l'API OpenAI — Responses API
+const OPENAI_URL = 'https://api.openai.com/v1/responses'
 
 interface ReponsePoiSelection {
   poi_selectionnes: POISelectionne[]
   erreur?: string
   cout?: object
-}
-
-interface OpenAIResponse {
-  choices?: Array<{
-    message?: { content?: string }
-  }>
 }
 
 /**
@@ -57,7 +52,9 @@ export async function executerPOISelection({
     types: p.types ?? [],
   }))
 
-  const promptUtilisateur = `Destination touristique : ${destination}
+  const promptUtilisateur = `Tu es un expert en tourisme français. Réponds UNIQUEMENT avec un JSON valide (sans markdown, sans commentaires).
+
+Destination touristique : ${destination}
 
 Liste de POI disponibles (${poi_list.length} entrées) :
 ${JSON.stringify(poiResume, null, 2)}
@@ -72,38 +69,32 @@ Réponds avec ce JSON exact :
   ]
 }`
 
-  // ─── Appel OpenAI ─────────────────────────────────────────────────────────
+  // ─── Appel OpenAI — Responses API ─────────────────────────────────────────
   let contenuBrut = ''
 
   try {
-    const response = await axios.post<OpenAIResponse>(
+    const response = await axios.post(
       OPENAI_URL,
       {
         model: 'gpt-5-mini',
-        messages: [
-          {
-            role: 'system',
-            content:
-              'Tu es un expert en tourisme français. Réponds UNIQUEMENT avec un JSON valide (sans markdown, sans commentaires).',
-          },
-          { role: 'user', content: promptUtilisateur },
-        ],
-        temperature: 0.2,
-        max_tokens: 200,
+        input: promptUtilisateur,
+        max_output_tokens: 500,
+        reasoning: { effort: 'low' },
       },
       {
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
-        timeout: 20_000,
+        timeout: 180_000,
       }
     )
 
-    contenuBrut = response.data.choices?.[0]?.message?.content ?? ''
-  } catch (err) {
+    contenuBrut = parseOpenAIResponse(response.data)
+  } catch (err: unknown) {
     // Fallback : on prend les 3 premiers POI de la liste
-    console.error('[poi-selection] Erreur appel OpenAI :', err)
+    const e = err as { message?: string }
+    console.error('[poi-selection] Erreur appel OpenAI :', e.message)
     return {
       poi_selectionnes: poi_list.slice(0, 3).map((p) => ({
         nom: String(p.nom ?? p['rdfs:label'] ?? 'POI inconnu'),

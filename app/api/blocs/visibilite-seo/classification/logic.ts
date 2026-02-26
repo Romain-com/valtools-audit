@@ -6,11 +6,13 @@
 // ⚠️  Filtre pré-OpenAI : patterns hors-tourisme évidents exclus avant envoi au modèle
 
 import axios from 'axios'
+import { parseOpenAIResponse } from '@/lib/openai-parse'
 import { API_COSTS } from '@/lib/api-costs'
 import type { KeywordMarche, KeywordPositionneOT, KeywordClassifie, CategorieKeyword } from '@/types/visibilite-seo'
 
-const OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
-const TIMEOUT_MS = 60_000
+// URL de l'API OpenAI — Responses API
+const OPENAI_URL = 'https://api.openai.com/v1/responses'
+const TIMEOUT_MS = 180_000
 const BATCH_SIZE = 50
 
 // ─── Patterns hors-tourisme filtrés AVANT envoi à OpenAI ─────────────────────
@@ -102,15 +104,15 @@ async function classifierBatch(
     })
     .join('\n')
 
-  const systemPrompt = `Tu es expert SEO touristique. Tu réponds uniquement en JSON valide.
+  const prompt = `Tu es expert SEO touristique. Tu réponds uniquement en JSON valide.
 
 RÈGLES STRICTES :
 - "météo [destination]" et toutes variantes météo → catégorie "hors-tourisme", intent_transactionnel: false
 - Keywords sans lien direct avec le tourisme (actualités locales, services municipaux, résultats sportifs, escort, séisme...) → "hors-tourisme"
 - intent_transactionnel: true UNIQUEMENT si le keyword exprime clairement une intention d'achat, réservation ou location (pas juste informatif)
-- gap: true UNIQUEMENT si position_ot > 20 ou position_ot est null (pos_ot ≤ 20 = JAMAIS un gap)`
+- gap: true UNIQUEMENT si position_ot > 20 ou position_ot est null (pos_ot ≤ 20 = JAMAIS un gap)
 
-  const prompt = `Classifie ces ${keywords.length} keywords pour la destination "${destination}".
+Classifie ces ${keywords.length} keywords pour la destination "${destination}".
 
 Pour chaque keyword, retourne un objet JSON avec :
 - keyword (string, exact)
@@ -132,12 +134,9 @@ Réponds UNIQUEMENT avec un JSON valide (sans markdown, sans commentaires) :
     OPENAI_URL,
     {
       model: 'gpt-5-mini',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: prompt },
-      ],
-      temperature: 0.1,
-      max_tokens: 4000,
+      input: prompt,
+      max_output_tokens: 4000,
+      reasoning: { effort: 'low' },
     },
     {
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -145,7 +144,7 @@ Réponds UNIQUEMENT avec un JSON valide (sans markdown, sans commentaires) :
     }
   )
 
-  const brut = response.data.choices?.[0]?.message?.content ?? ''
+  const brut = parseOpenAIResponse(response.data)
   try {
     const parsed = JSON.parse(brut.replace(/```json\n?|```/g, '').trim())
     return parsed.keywords_classes ?? []

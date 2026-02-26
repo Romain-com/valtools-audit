@@ -1,11 +1,13 @@
 // Logique métier — stocks-physiques/synthese
-// Génère via GPT-4o-mini la synthèse narrative des stocks physiques
+// Génère via GPT-5-mini (Responses API) la synthèse narrative des stocks physiques
 // Input : stocks finaux fusionnés (DATA Tourisme + SIRENE)
 
 import axios from 'axios'
+import { parseOpenAIResponse } from '@/lib/openai-parse'
 import type { StocksPhysiquesFinaux } from '@/types/stocks-physiques'
 
-const OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
+// URL de l'API OpenAI — Responses API
+const OPENAI_URL = 'https://api.openai.com/v1/responses'
 
 /**
  * Génère la synthèse narrative des stocks physiques via OpenAI.
@@ -30,7 +32,9 @@ export async function executerSyntheseStocksPhysiques({
   const fmt = (label: string, v: { volume: number; pct: number }) =>
     `${label}: ${v.volume} (${v.pct}%)`
 
-  const promptUser = `Destination touristique : ${destination}
+  const promptUser = `Tu es expert en tourisme et transformation digitale des destinations françaises. Réponds UNIQUEMENT avec un JSON valide, sans markdown, sans commentaires.
+
+Destination touristique : ${destination}
 
 Stock physique total recensé : ${total_stock_physique} établissements
 
@@ -85,26 +89,19 @@ Réponds UNIQUEMENT avec ce JSON valide :
     OPENAI_URL,
     {
       model: 'gpt-5-mini',
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Tu es expert en tourisme et transformation digitale des destinations françaises. Réponds UNIQUEMENT avec un JSON valide, sans markdown, sans commentaires.',
-        },
-        { role: 'user', content: promptUser },
-      ],
-      temperature: 0.2,
-      max_tokens: 600,
+      input: promptUser,
+      max_output_tokens: 1000,
+      reasoning: { effort: 'low' },
     },
     {
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      timeout: 45000,
+      timeout: 180_000,
     }
   )
 
-  const brut = reponse.data.choices?.[0]?.message?.content ?? ''
+  const brut = parseOpenAIResponse(reponse.data)
   return JSON.parse(brut.replace(/```json\n?|```/g, '').trim())
 }

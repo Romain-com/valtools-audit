@@ -6,6 +6,7 @@
 // ⚠️  top_5_opportunites basé UNIQUEMENT sur les vrais_gaps confirmés par SERP live
 
 import axios from 'axios'
+import { parseOpenAIResponse } from '@/lib/openai-parse'
 import { API_COSTS } from '@/lib/api-costs'
 import type {
   KeywordClassifie,
@@ -15,8 +16,9 @@ import type {
   ResultatPhaseB,
 } from '@/types/visibilite-seo'
 
-const OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
-const TIMEOUT_MS = 60_000
+// URL de l'API OpenAI — Responses API
+const OPENAI_URL = 'https://api.openai.com/v1/responses'
+const TIMEOUT_MS = 180_000
 
 // ─── Fonction exportée ────────────────────────────────────────────────────────
 
@@ -156,12 +158,9 @@ Retourne UNIQUEMENT ce JSON valide (sans markdown, sans commentaires) :
       OPENAI_URL,
       {
         model: 'gpt-5-mini',
-        messages: [
-          { role: 'system', content: 'Tu es expert SEO touristique. Tu réponds uniquement en JSON valide. Tu choisis les opportunités UNIQUEMENT parmi la liste fournie.' },
-          { role: 'user', content: prompt },
-        ],
-        temperature: 0.1,
-        max_tokens: 1500,
+        input: prompt,
+        max_output_tokens: 2000,
+        reasoning: { effort: 'medium' },
       },
       {
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -169,7 +168,7 @@ Retourne UNIQUEMENT ce JSON valide (sans markdown, sans commentaires) :
       }
     )
 
-    const brut = response.data.choices?.[0]?.message?.content ?? ''
+    const brut = parseOpenAIResponse(response.data)
     const parsed = JSON.parse(brut.replace(/```json\n?|```/g, '').trim())
 
     const resultat: ResultatPhaseB = {

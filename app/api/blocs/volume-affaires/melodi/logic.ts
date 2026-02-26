@@ -235,15 +235,14 @@ Réponds UNIQUEMENT avec un JSON valide (sans markdown, sans commentaires) :
           },
           { role: 'user', content: promptUser },
         ],
-        temperature: 0.2,
-        max_tokens: 300,
+        max_completion_tokens: 8000,
       },
       {
         headers: {
           Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
           'Content-Type': 'application/json',
         },
-        timeout: 30000,
+        timeout: 180_000,
       }
     )
 

@@ -1,8 +1,9 @@
-// Logique métier — OpenAI GPT-4o-mini
+// Logique métier — OpenAI GPT-5-mini (Responses API)
 // Responsabilité : analyser les données Google + Instagram et produire un positionnement marketing
 // Importé directement par l'orchestrateur pour éviter les appels HTTP auto-référentiels
 
 import axios from 'axios'
+import { parseOpenAIResponse } from '@/lib/openai-parse'
 import type {
   ResultatMaps,
   ResultatInstagram,
@@ -10,29 +11,15 @@ import type {
   AnalysePositionnementErreur,
 } from '@/types/positionnement'
 
-// URL de l'API OpenAI
-const OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
+// URL de l'API OpenAI — Responses API
+const OPENAI_URL = 'https://api.openai.com/v1/responses'
 
 // Paramètres du modèle
 const MODELE = 'gpt-5-mini'
-const TEMPERATURE = 0.2
-const MAX_TOKENS = 400
+const MAX_OUTPUT_TOKENS = 1000
 
 // Coût unitaire par appel (en euros)
 const COUT_UNITAIRE = 0.001
-
-interface OpenAIMessage {
-  role: 'system' | 'user' | 'assistant'
-  content: string
-}
-
-interface OpenAIResponse {
-  choices?: Array<{
-    message?: {
-      content?: string
-    }
-  }>
-}
 
 /**
  * Construit le prompt utilisateur à partir des données Google Maps et Instagram.
@@ -110,43 +97,39 @@ export async function executerOpenAIPositionnement({
 
   // ─── Appel OpenAI ────────────────────────────────────────────────────────
 
-  const messages: OpenAIMessage[] = [
-    {
-      role: 'system',
-      // Instruction stricte : JSON uniquement, pas de markdown
-      content:
-        "Tu es un expert en marketing touristique français. Réponds UNIQUEMENT avec un JSON valide (sans markdown, sans commentaires).",
-    },
-    {
-      role: 'user',
-      content: construirePromptUtilisateur(destination, google, instagram),
-    },
-  ]
-
   let contenuBrut = ''
 
+  // Log diagnostique — payload envoyé à OpenAI
+  const promptUser = construirePromptUtilisateur(destination, google, instagram)
+  console.log('[OpenAI Bloc1] prompt length:', promptUser.length, '| google.ot:', JSON.stringify(google?.ot)?.slice(0, 100))
+
+  // Combinaison instruction système + prompt utilisateur pour la Responses API
+  const inputCombine = `Tu es un expert en marketing touristique français. Réponds UNIQUEMENT avec un JSON valide (sans markdown, sans commentaires).\n\n${promptUser}`
+
   try {
-    const response = await axios.post<OpenAIResponse>(
+    const response = await axios.post(
       OPENAI_URL,
       {
         model: MODELE,
-        messages,
-        temperature: TEMPERATURE,
-        max_tokens: MAX_TOKENS,
+        input: inputCombine,
+        max_output_tokens: MAX_OUTPUT_TOKENS,
+        reasoning: { effort: 'low' },
       },
       {
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
-        // Timeout raisonnable pour gpt-5-mini
-        timeout: 30_000,
+        timeout: 180_000,
       }
     )
 
-    contenuBrut = response.data.choices?.[0]?.message?.content ?? ''
-  } catch (err) {
+    contenuBrut = parseOpenAIResponse(response.data)
+  } catch (err: unknown) {
+    // Log du message d'erreur OpenAI pour diagnostique
+    const axiosErr = err as { response?: { data?: unknown }; message?: string; status?: number; code?: string }
     console.error('[OpenAI] Erreur appel API :', err)
+    console.error('[OpenAI] Réponse serveur :', JSON.stringify(axiosErr.response?.data))
     const resultatErreur: AnalysePositionnementErreur = {
       erreur: 'parsing_failed',
       raw: '',

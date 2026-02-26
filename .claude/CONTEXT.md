@@ -1,5 +1,5 @@
 # CONTEXT.MD — Destination Digital Audit App
-> Dernière mise à jour : Phase 3B — Orchestrateur principal + Observabilité (2026-02-25)
+> Dernière mise à jour : Migration Responses API + Fix parsing OpenAI (2026-02-26)
 > Destination de test de référence : **Annecy** | Domaine OT : `lac-annecy.com`
 
 ---
@@ -102,13 +102,21 @@ Payload: { "keyword": "Office de tourisme Annecy", "language_code": "fr", "locat
 ```
 OPENAI_API_KEY=sk-proj-V2iayBm71Rm...
 ```
-**Modèle** : `gpt-5-mini` (économie de tokens)
+**Modèle** : `gpt-5-mini` (économie de tokens) — **Responses API** (pas Chat Completions)
 ```
-POST https://api.openai.com/v1/chat/completions
-{ "model": "gpt-5-mini", "temperature": 0.2, "max_tokens": 300 }
+POST https://api.openai.com/v1/responses
+{
+  "model": "gpt-5-mini",
+  "input": "prompt système + prompt user fusionnés en une seule chaîne",
+  "max_output_tokens": 1000,
+  "reasoning": { "effort": "low" }
+}
 ```
 - Toujours demander JSON pur : "Réponds UNIQUEMENT avec un JSON valide (sans markdown, sans commentaires)"
-- Parser systématiquement : `JSON.parse(raw.replace(/```json\n?|```/g, '').trim())`
+- Parser la réponse via le helper partagé `lib/openai-parse.ts` (voir section dédiée)
+- Parser systématiquement : `JSON.parse(brut.replace(/```json\n?|```/g, '').trim())`
+- ⚠️ Pas de `temperature` (non supporté sur les modèles reasoning)
+- ⚠️ `max_output_tokens` minimum **500** — les tokens de raisonnement interne consomment ~80% du budget
 
 **Rôles dans l'audit** : positionnement marketing, suggestion hashtags, identification 6 concurrents (3 directs + 3 indirects), génération contenus à copier-coller
 
@@ -1443,7 +1451,7 @@ app/api/audits/lancer/route.ts       ← POST → UPSERT destination + INSERT/UP
 
 **`/dashboard`** : grille responsive de cards destinations. Chaque card = nom + département + date + badge statut + coût total + 3 KPIs avec jauges (note Google, keywords SEO, score gap). État vide = illustration montagne + bouton "Premier audit". Bouton "Nouvel audit" en haut à droite.
 
-**`/audit/nouveau`** : champ recherche autocomplete (debounce 300ms, min 2 chars) → microservice `/communes` avec fallback `geo.api.gouv.fr`. Dropdown suggestions (nom + CP + département + population). Sélection → vérification doublon via `/api/destinations/check`. Doublon → modale avec date du dernier audit + choix relancer/annuler. Panel confirmation avec tous les champs. Bouton "Lancer l'audit" → `/api/audits/lancer` → redirect progression.
+**`/audit/nouveau`** : panneau health check en haut (vert/orange/rouge par service) + bouton "Revérifier". Champ recherche autocomplete (debounce 300ms, min 2 chars) → microservice `/communes` uniquement (⚠️ plus de fallback `geo.api.gouv.fr`). Dropdown suggestions (nom + CP + département + SIREN). Sélection → vérification doublon via `/api/destinations/check`. Doublon → modale avec date du dernier audit + choix relancer/annuler. Panel confirmation avec tous les champs dont SIREN. Bouton "Lancer l'audit" → désactivé si services critiques down OU SIREN invalide → `/api/audits/lancer` → redirect progression.
 
 **`/audit/[id]/progression`** : animation montagne SVG avec 7 étapes marquées, skieur SVG pur qui monte de la base vers le sommet. Skieur pulse (animation CSS) si bloc `en_attente_validation`. Liste des 7 blocs avec statut temps réel via Supabase Realtime (postgres_changes sur `audits` filtré par `id`). Alerte orange + bouton "Valider" si validation requise. Modale placeholder Phase 3B pour blocs 4 et 7. Coût cumulé en bas. Bouton "Voir les résultats" quand tout est terminé.
 
@@ -1582,14 +1590,16 @@ Les SVG décoratifs sont placés dans le layout racine en couche `fixed z-0`, de
 L'audit est découpé en **3 segments** séparés pour gérer les deux pauses de validation :
 
 ```
-Segment A (maxDuration=300) : Blocs 1 → 2 → 3 → 4 Phase A
+Segment A (maxDuration=300) : Blocs 1 → 2 → 3 → 4 Phase A   [séquentiel strict]
             → pause : bloc4 = 'en_attente_validation'
 
-Segment B (maxDuration=300) : Bloc 4 Phase B → Bloc 5 → Bloc 6 → Bloc 7 Phase A
+Segment B (maxDuration=300) : Bloc 4 Phase B → Bloc 5 → Bloc 7 Phase A   [séquentiel strict]
             → pause : bloc7 = 'en_attente_validation'
+            ⚠️ Bloc 6 retiré du Segment B — déplacé dans Segment C
 
-Segment C (maxDuration=120) : Bloc 7 Phase B
+Segment C (maxDuration=300) : Bloc 6 → Bloc 7 Phase B   [séquentiel strict]
             → statut global : 'termine'
+            ⚠️ maxDuration passé à 300 (Playwright Bloc 6 peut prendre 3-4 min)
 ```
 
 #### Table `audit_logs` (créée Phase 3B)
@@ -1630,7 +1640,8 @@ lib/orchestrateur/
 ├── blocs-statuts.ts      → Types StatutBloc, BlocsStatuts, ParamsAudit, ResultatBloc
 ├── logger.ts             → logInfo / logWarning / logError → audit_logs (fire & forget)
 ├── supabase-updates.ts   → mettreAJourBloc, mettreAJourStatutAudit, lireParamsAudit,
-│                           lireBlocsStatuts, initialiserBlocsStatutsEnBase
+│                           lireBlocsStatuts, initialiserBlocsStatutsEnBase,
+│                           lireDomaineOT (NOUVEAU — lecture rapide depuis resultats.schema_digital)
 │                           ⚠️ Merge JSONB manuel (read → merge → write) — pas d'opérateur ||
 └── wrappers/
     ├── bloc1.ts  → auditPositionnement() + normalisation hashtag
@@ -1647,9 +1658,18 @@ lib/orchestrateur/
 ```
 app/api/orchestrateur/
 ├── segment-a/route.ts  → POST { audit_id } — Blocs 1→2→3→4A
-├── segment-b/route.ts  → POST { audit_id, keywords_valides[] } — Blocs 4B→5→6→7A
-├── segment-c/route.ts  → POST { audit_id, concurrents_valides[] } — Bloc 7B
+├── segment-b/route.ts  → POST { audit_id, keywords_valides[] } — Blocs 4B→5→7A
+├── segment-c/route.ts  → POST { audit_id, concurrents_valides[] } — Blocs 6→7B
 └── statut/route.ts     → GET ?audit_id= — polling fallback Realtime
+```
+
+**Health check** :
+```
+app/api/health/route.ts → GET /api/health
+  Services critiques (bloquants) : microservice_local, supabase, openai, dataforseo
+  Services optionnels (warning)  : haloscan, apify
+  Timeout par service : 5s
+  Retourne : { ok: boolean, services: { [nom]: { ok, critique, message } } }
 ```
 
 Tous avec `export const runtime = 'nodejs'` (Playwright dans Bloc 6).
@@ -1776,6 +1796,338 @@ Trois routes retournaient 400 sur liste vide → corrigées pour retourner résu
 | `lib/orchestrateur/supabase-updates.ts` | `lireParamsAudit` : nom, code_insee, domaine_ot, domaine_ot_source (bloc3_detecte ou null) |
 
 ⚠️ `lireParamsAudit` est appelé deux fois dans Segment A — le **second appel** (après Bloc 3) est le critique : il doit afficher `domaine_ot_source: 'bloc3_detecte'` et une valeur non nulle.
+
+### Correctifs Session 3 — Compatibilité GPT-5-mini (2026-02-26)
+
+#### Contexte
+
+L'erreur `[OpenAI] Erreur appel API : AxiosError 400` sur Bloc 1 (et tous les blocs OpenAI) n'était pas liée au nom du modèle `gpt-5-mini` (qui existe bien sur ce compte), mais à deux paramètres API devenus incompatibles avec les modèles GPT-5.
+
+#### Problème 1 — `max_tokens` non supporté
+
+GPT-5-mini rejette le paramètre `max_tokens` avec :
+```json
+{ "error": { "message": "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead." } }
+```
+
+**Correction** : remplacer `max_tokens` par `max_completion_tokens` dans les 13 `logic.ts` concernés.
+
+#### Problème 2 — `temperature` non supporté (valeur ≠ 1)
+
+GPT-5-mini rejette `temperature: 0.2` avec :
+```json
+{ "error": { "message": "Unsupported value: 'temperature' does not support 0.2 with this model. Only the default (1) value is supported." } }
+```
+
+**Correction** : supprimer le paramètre `temperature` dans les mêmes 13 `logic.ts`.
+
+#### Fichiers modifiés (13 logic.ts)
+
+`positionnement/openai`, `positionnement/poi-selection`, `schema-digital/classification`, `schema-digital/analyse-ot`, `schema-digital/openai`, `visibilite-seo/classification`, `visibilite-seo/synthese`, `volume-affaires/melodi`, `volume-affaires/openai`, `stocks-physiques/synthese`, `stock-en-ligne/synthese`, `concurrents/identification`, `concurrents/synthese`
+
+#### Problème 3 — `max_completion_tokens` trop bas → réponse vide tronquée
+
+GPT-5-mini est un **modèle de raisonnement** : il consomme des tokens en interne (reasoning tokens) avant de produire la réponse visible. Avec des valeurs basses (300-1500), la quasi-totalité des tokens est absorbée par le raisonnement interne → la réponse visible est vide → `JSON.parse("")` lève `SyntaxError: Unexpected end of JSON input`.
+
+**Exemple observé** (classification simple, 3 URLs) :
+```json
+"usage": {
+  "completion_tokens": 675,
+  "completion_tokens_details": { "reasoning_tokens": 576 }
+}
+```
+576 tokens de raisonnement pour seulement 99 tokens de réponse visible.
+
+**Correction** : porter toutes les valeurs à 8 000 (réponses standard) ou 16 000 (classifications complexes).
+
+| Fichier | Ancienne valeur | Nouvelle valeur |
+|---------|----------------|----------------|
+| `positionnement/openai` | 400 | 8 000 |
+| `positionnement/poi-selection` | 200 | 8 000 |
+| `schema-digital/analyse-ot` | 300 | 8 000 |
+| `schema-digital/classification` | 1 500 | **16 000** |
+| `schema-digital/openai` | 500 | 8 000 |
+| `stock-en-ligne/synthese` | 600 | 8 000 |
+| `stocks-physiques/synthese` | 600 | 8 000 |
+| `visibilite-seo/classification` | 4 000 | **16 000** |
+| `visibilite-seo/synthese` | 1 500 | 8 000 |
+| `volume-affaires/melodi` | 300 | 8 000 |
+| `volume-affaires/openai` | 500 | 8 000 |
+| `concurrents/identification` | 1 200 | **16 000** |
+| `concurrents/synthese` | 800 | 8 000 |
+
+#### Règle à retenir pour GPT-5 et GPT-5-mini
+
+| Paramètre | GPT-4o-mini | GPT-5-mini |
+|-----------|------------|------------|
+| `max_tokens` | ✅ | ❌ → utiliser `max_completion_tokens` |
+| `temperature` | ✅ (0-2) | ❌ sauf valeur par défaut (1) — supprimer le param |
+| `max_completion_tokens` valeur basse | ✅ (tokens = output seul) | ❌ → minimum 8 000 (reasoning interne ~80% des tokens) |
+
+---
+
+### Phase 3C — Fix architecture : suppression appels HTTP auto-référentiels ✅ TERMINÉE (2026-02-26)
+
+#### Problème identifié — deadlock auto-référentiel
+
+Les `lib/blocs/*.ts` (exécutés depuis l'orchestrateur, lui-même un Route Handler Next.js) appelaient leurs propres APIs via `fetch('http://localhost:3000/api/blocs/...')`. Ces appels **échouaient silencieusement** dans le serveur dev Node.js (deadlock du même processus). Le `catch` global de chaque wrapper retournait des résultats vides, déclenchant une cascade sur tous les blocs en aval.
+
+**Symptôme observable** : Bloc 3 terminé en ~6s au lieu de ~53s (les vrais appels DataForSEO prennent 50s+). L'exception était attrapée immédiatement sans appel réseau réel.
+
+**Cascade complète** :
+```
+lib/blocs/schema-digital.ts
+  → fetch('http://localhost:3000/api/blocs/schema-digital/serp')  ← DEADLOCK
+    → catch immédiat → domaine_ot_detecte: null
+      → Bloc 4 : domaine vide → 0 keywords
+        → Bloc 6/7 : données incomplètes
+```
+
+#### Solution — extraction logic.ts
+
+Pour chaque route, extraire la logique métier dans un `logic.ts` colocalisé. Les `lib/blocs` importent `logic.ts` directement (import TypeScript) au lieu de passer par HTTP.
+
+```
+AVANT :
+  lib/blocs/schema-digital.ts
+    → fetch('http://localhost:3000/api/blocs/schema-digital/serp')
+        → route.ts → DataForSEO
+
+APRÈS :
+  lib/blocs/schema-digital.ts
+    → import { executerSERP } from '@/app/api/blocs/schema-digital/serp/logic'
+        → logic.ts → DataForSEO directement
+
+  route.ts (conservé inchangé pour les appels front) :
+    → import { executerSERP } from './logic'
+    → NextResponse.json(await executerSERP(body))
+```
+
+#### 24 fichiers logic.ts créés
+
+| Bloc | Routes | Fonctions exportées |
+|------|--------|-------------------|
+| **Bloc 3 — Schema Digital** | serp, classification, haloscan, domain-analytics, pagespeed, analyse-ot, openai | `executerSERP`, `executerClassification`, `executerHaloscan`, `executerDomainAnalytics`, `executerPageSpeed`, `executerAnalyseOT`, `executerOpenAISchemaDigital` |
+| **Bloc 1 — Positionnement** | poi, poi-selection, maps, instagram, openai | `executerPOI`, `executerPOISelection`, `executerMaps`, `executerInstagram`, `executerOpenAIPositionnement` |
+| **Bloc 2 — Volume Affaires** | epci, taxe, epci-communes, melodi, openai | `executerEPCI`, `executerTaxe`, `executerEPCICommunes`, `executerMelodi`, `executerOpenAIVolumeAffaires` |
+| **Bloc 4 — Visibilité SEO** | haloscan-market, dataforseo-related, dataforseo-ranked, classification, serp-transac, synthese | `executerHaloscanMarket`, `executerDataForSEORelated`, `executerDataForSEORanked`, `executerClassificationSEO`, `executerSERPTransac`, `executerSyntheseVisibiliteSEO` |
+| **Bloc 5 — Stocks Physiques** | datatourisme, sirene, synthese | `executerDataTourisme`, `executerSIRENE`, `executerSyntheseStocksPhysiques` |
+| **Bloc 6 — Stock En Ligne** | synthese | `executerSyntheseStockEnLigne` |
+| **Bloc 7 — Concurrents** | identification, metriques, synthese | `executerIdentificationConcurrents`, `executerMetriquesConcurrents`, `executerSyntheseConcurrents` |
+
+#### Patron appliqué — logic.ts
+
+```typescript
+// logic.ts — corps extrait du handler POST()
+export async function executerXXX({ param }: { param: string }) {
+  // Logique métier ex-route.ts
+  // throw new Error(...) à la place de NextResponse.json({ error }, { status: 4xx })
+  // return data directement à la place de NextResponse.json(data)
+}
+```
+
+```typescript
+// route.ts — thin wrapper HTTP
+import { executerXXX } from './logic'
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json()
+    return NextResponse.json(await executerXXX(body))
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Erreur inconnue'
+    return NextResponse.json({ error: message }, { status: 500 })
+  }
+}
+```
+
+#### 9 fichiers lib/blocs mis à jour
+
+Dans chaque fichier : suppression de `BASE_URL` + `appelRoute<T>()`, remplacement par imports directs.
+
+| Fichier | Appels remplacés |
+|---------|-----------------|
+| `lib/blocs/schema-digital.ts` | 7 appelRoute → 7 imports logic.ts |
+| `lib/blocs/positionnement.ts` | 5 appelRoute → 5 imports logic.ts |
+| `lib/blocs/volume-affaires.ts` | 5 appelRoute → 5 imports logic.ts |
+| `lib/blocs/visibilite-seo-phase-a.ts` | 4 appelRoute → 4 imports logic.ts |
+| `lib/blocs/visibilite-seo-phase-b.ts` | 2 appelRoute → 2 imports logic.ts |
+| `lib/blocs/stocks-physiques.ts` | 3 appelRoute → 3 imports logic.ts |
+| `lib/blocs/stock-en-ligne.ts` | 1 appelRoute → 1 import logic.ts |
+| `lib/blocs/concurrents-phase-a.ts` | 2 appelRoute → 2 imports logic.ts |
+| `lib/blocs/concurrents-phase-b.ts` | 1 appelRoute → 1 import logic.ts |
+
+#### Correctifs TypeScript post-extraction
+
+| Fichier | Erreur | Correction |
+|---------|--------|-----------|
+| `lib/blocs/schema-digital.ts:160` | `position: number \| undefined` non assignable à `number` | `.position ?? 0`, `.url ?? ''`, `.requete_source ?? ''` |
+| `lib/blocs/stock-en-ligne.ts:180` | Overlap type — cast direct impossible | `as unknown as { cout: ...; [k: string]: unknown }` |
+| `lib/orchestrateur/wrappers/bloc*.ts` (×6) | Type sans index signature ne peut pas caster en `Record<string, unknown>` | `resultat as unknown as Record<string, unknown>` |
+
+#### Fix test-bloc2.js — arguments CLI
+
+`test-bloc2.js` ignorait les arguments `argv[2..5]` et testait Vanves + Annecy en dur. Corrigé pour utiliser les arguments passés :
+
+```javascript
+const CAS = process.argv[2]
+  ? [{ label: process.argv[2], destination: process.argv[2],
+       code_insee: process.argv[3] ?? '74010',
+       siren_commune: process.argv[4] ?? '200063402',
+       population_commune: Number(process.argv[5] ?? 0) }]
+  : CAS_DEFAUT
+// Usage : node test-bloc2.js Megève 74173 217401730 3600
+```
+
+#### Résultat
+
+- **Build** : `npm run build` — 46 routes compilées, 0 erreur TypeScript
+- **Commit** : `998e178` — 77 fichiers modifiés, +4846 / −4529 lignes
+- **Validation** : relancer un audit Megève via l'orchestrateur — Bloc 3 doit prendre ~50s (vrais appels DataForSEO), `nb_serp_fusionne > 0`, `domaine_ot_detecte` non nul
+
+---
+
+### Fix 3-en-1 — SIREN + Health check + Séquencement (2026-02-26)
+
+#### 1. Suppression du SIREN de substitution
+
+**Règle absolue** : le SIREN doit être un vrai SIREN à 9 chiffres issu du CSV local via le microservice.
+
+**`app/api/audits/lancer/route.ts`** :
+- Valide `siren` via `/^\d{9}$/` → HTTP 400 `{ error: 'SIREN invalide — le microservice local doit être démarré' }` si invalide
+- Suppression du fallback `siren || \`insee-${commune.code}\``
+
+**`app/audit/nouveau/page.tsx`** :
+- Suppression de tout appel à `geo.api.gouv.fr` — le microservice est la seule source d'autocomplete
+- Bouton "Lancer l'audit" désactivé si `!/^\d{9}$/.test(selected.siren)`
+- Affichage explicite du SIREN dans la fiche de confirmation (rouge si invalide)
+
+**Nettoyage SQL** (à exécuter manuellement sur Supabase) :
+```sql
+DELETE FROM audit_logs WHERE audit_id IN (
+  SELECT a.id FROM audits a
+  JOIN destinations d ON a.destination_id = d.id
+  WHERE d.siren LIKE 'insee-%'
+);
+DELETE FROM audits WHERE destination_id IN (
+  SELECT id FROM destinations WHERE siren LIKE 'insee-%'
+);
+DELETE FROM destinations WHERE siren LIKE 'insee-%';
+```
+
+#### 2. Health check avant lancement
+
+**`app/api/health/route.ts`** (nouveau fichier) :
+- `GET /api/health` — vérifie 6 services en parallèle avec timeout 5s
+- Critiques : `microservice_local` (GET /health), `supabase` (SELECT 1), `openai` (GET /models), `dataforseo` (GET /appendix/user_data)
+- Optionnels : `haloscan` (POST /domains/overview), `apify` (GET /users/me)
+- Retourne `{ ok: boolean, services: { [nom]: { ok, critique, message } } }`
+
+**`app/audit/nouveau/page.tsx`** :
+- Panneau compact en haut du formulaire avec icônes vert/orange/rouge par service
+- `useEffect` au chargement → appel automatique, bouton "Revérifier" manuel
+- Bouton "Lancer l'audit" désactivé si `!healthData.ok` (critiques KO) ou healthLoading
+- Messages d'erreur explicites pour chaque service dans le panneau
+- Import `HealthResponse` + `ServiceStatus` depuis `@/app/api/health/route`
+
+#### 3. Séquencement strict des blocs
+
+**`lib/orchestrateur/supabase-updates.ts`** :
+- Ajout `lireDomaineOT(auditId)` — lit `resultats.schema_digital.domaine_ot_detecte` directement sans jointure
+
+**`app/api/orchestrateur/segment-a/route.ts`** :
+- Import `lireDomaineOT`
+- Après Bloc 3 : appel `lireDomaineOT(audit_id)` + `logInfo('domaine_ot résolu après Bloc 3')`
+
+**`app/api/orchestrateur/segment-b/route.ts`** :
+- Bloc 6 retiré — déplacé dans Segment C
+- Nouvelle séquence : Bloc 4B → Bloc 5 → Bloc 7A
+- Import `lancerBloc6` supprimé
+
+**`app/api/orchestrateur/segment-c/route.ts`** :
+- Bloc 6 ajouté en tête — exécuté avant Bloc 7B
+- `maxDuration` passé de 120 à 300 (Playwright peut prendre 3-4 min)
+- Import `lancerBloc6` ajouté
+- Nouvelle séquence : Bloc 6 → Bloc 7B
+
+---
+
+### Fix — Migration Responses API + Helper parsing (2026-02-26)
+
+#### Contexte
+
+Tous les fichiers `logic.ts` utilisaient l'ancienne API Chat Completions (`POST /v1/chat/completions`). Migration vers la **Responses API** (`POST /v1/responses`) pour `gpt-5-mini` (modèle reasoning).
+
+#### 12 fichiers logic.ts migrés
+
+| Fichier | `max_output_tokens` | `reasoning.effort` |
+|---------|--------------------|--------------------|
+| `positionnement/openai/logic.ts` | 1 000 | low |
+| `positionnement/poi-selection/logic.ts` | 500 | low |
+| `volume-affaires/openai/logic.ts` | 1 000 | low |
+| `schema-digital/classification/logic.ts` | 2 000 | low |
+| `schema-digital/analyse-ot/logic.ts` | 500 | low |
+| `schema-digital/openai/logic.ts` | 1 000 | low |
+| `visibilite-seo/classification/logic.ts` | 4 000 | low |
+| `visibilite-seo/synthese/logic.ts` | 2 000 | **medium** |
+| `stocks-physiques/synthese/logic.ts` | 1 000 | low |
+| `stock-en-ligne/synthese/logic.ts` | 1 000 | low |
+| `concurrents/identification/logic.ts` | 2 000 | low |
+| `concurrents/synthese/logic.ts` | 1 000 | low |
+
+#### Changements par fichier
+
+```typescript
+// AVANT
+const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+  model: 'gpt-5-mini',
+  temperature: 0.2,
+  messages: [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userPrompt },
+  ],
+  max_tokens: 300,
+})
+const brut = response.data.choices[0].message.content
+
+// APRÈS
+import { parseOpenAIResponse } from '@/lib/openai-parse'
+const response = await axios.post('https://api.openai.com/v1/responses', {
+  model: 'gpt-5-mini',
+  input: `${systemPrompt}\n\n${userPrompt}`,   // fusion en une seule chaîne
+  max_output_tokens: 1000,
+  reasoning: { effort: 'low' },
+})
+const brut = parseOpenAIResponse(response.data)
+```
+
+#### Helper partagé — `lib/openai-parse.ts`
+
+La Responses API ne retourne pas `choices[0].message.content`. Le texte est dans `output[].type === 'message' → content[0].text`.
+
+```typescript
+// lib/openai-parse.ts
+export function parseOpenAIResponse(data: unknown): string {
+  const d = data as Record<string, unknown>
+  // Format Responses API : output[] contient les blocs de réponse
+  if (d?.output) {
+    const out = d.output as Array<{ type: string; content?: Array<{ text?: string }> }>
+    const messageBlock = out.find((o) => o.type === 'message')
+    return messageBlock?.content?.[0]?.text ?? ''
+  }
+  // Fallback Chat Completions (ne devrait plus arriver)
+  const choices = d?.choices as Array<{ message: { content: string } }> | undefined
+  return choices?.[0]?.message?.content ?? ''
+}
+```
+
+#### Valeurs `max_output_tokens` — règle
+
+- Minimum absolu : **500** (tokens reasoning interne ~80% du budget)
+- Sorties JSON simples (≤ 5 champs) : **500–1 000**
+- Sorties JSON moyennes (blocs structurés) : **1 000–2 000**
+- Sorties longues (batch keywords, liste concurrents) : **2 000–4 000**
+
+---
 
 ### Phase 4 — Page de résultats (intégrée Phase 3A)
 ✅ Structure complète affichée — données réelles via seed Annecy.

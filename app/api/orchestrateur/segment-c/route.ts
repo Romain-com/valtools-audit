@@ -1,13 +1,14 @@
-// Segment C — Bloc 7 Phase B → statut global 'termine'
-// Déclenché après validation des concurrents (Bloc 7 Phase B)
+// Segment C — Bloc 6 → Bloc 7 Phase B → statut global 'termine'
+// Déclenché après validation des concurrents (Bloc 7 Phase A)
 //
-// ⚠️ runtime 'nodejs' obligatoire
-// ⚠️ maxDuration = 120 — Phase B est plus courte
+// ⚠️ runtime 'nodejs' obligatoire — Bloc 6 utilise Playwright
+// ⚠️ maxDuration = 300 — Bloc 6 (Playwright) peut prendre jusqu'à 3-4 min
 
 export const runtime = 'nodejs'
-export const maxDuration = 120
+export const maxDuration = 300
 
 import { NextRequest, NextResponse } from 'next/server'
+import { lancerBloc6 } from '@/lib/orchestrateur/wrappers/bloc6'
 import { lancerBloc7PhaseB } from '@/lib/orchestrateur/wrappers/bloc7'
 import { logInfo, logError } from '@/lib/orchestrateur/logger'
 import {
@@ -59,13 +60,38 @@ export async function POST(req: NextRequest) {
       nb_concurrents_valides: concurrents_valides.length,
     })
 
+    const debutAudit = Date.now()
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // BLOC 6 — Stock en ligne (Playwright)
+    // ─────────────────────────────────────────────────────────────────────────────
+    await logInfo(audit_id, 'Bloc 6 démarré', 'bloc6')
+    await mettreAJourBloc(audit_id, 'bloc6', 'en_cours')
+
+    const debut6 = Date.now()
+    try {
+      const resultat6 = await lancerBloc6(params)
+      await mettreAJourBloc(audit_id, 'bloc6', 'termine', resultat6.resultats, resultat6.couts)
+      await logInfo(audit_id, 'Bloc 6 terminé', 'bloc6', {
+        duree_ms: Date.now() - debut6,
+        cout: resultat6.couts.total,
+      })
+    } catch (err) {
+      await mettreAJourBloc(audit_id, 'bloc6', 'erreur')
+      await logError(audit_id, 'Bloc 6 échoué', 'bloc6', {
+        error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+        params: { destination: params.nom, domaine_ot: params.domaine_ot },
+      })
+      // Erreur non bloquante — Bloc 7 Phase B se poursuit
+    }
+
     // ─────────────────────────────────────────────────────────────────────────────
     // BLOC 7 Phase B — Synthèse comparative concurrents
     // ─────────────────────────────────────────────────────────────────────────────
     await logInfo(audit_id, 'Bloc 7 Phase B démarré', 'bloc7')
     await mettreAJourBloc(audit_id, 'bloc7', 'en_cours')
 
-    const debutAudit = Date.now()
     const debut7b = Date.now()
 
     try {

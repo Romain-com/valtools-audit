@@ -1,10 +1,10 @@
 'use client'
-// Page de lancement d'un nouvel audit — recherche commune + vérification doublon
-import { useState, useRef, useCallback } from 'react'
+// Page de lancement d'un nouvel audit — recherche commune + health check + vérification doublon
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
 import Modal from '@/components/ui/Modal'
 import Spinner from '@/components/ui/Spinner'
+import type { HealthResponse, ServiceStatus } from '@/app/api/health/route'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -14,7 +14,7 @@ interface Commune {
   codesPostaux: string[]
   codeDepartement: string
   codeRegion: string
-  nomRegion?: string     // Nom lisible (fourni par geo API ou map statique)
+  nomRegion?: string
   population: number
   siren?: string
 }
@@ -37,7 +37,7 @@ const REGIONS_FR: Record<string, string> = {
   '75': 'Nouvelle-Aquitaine',
   '76': 'Occitanie',
   '84': 'Auvergne-Rhône-Alpes',
-  '93': 'Provence-Alpes-Côte d\'Azur',
+  '93': "Provence-Alpes-Côte d'Azur",
   '94': 'Corse',
 }
 
@@ -48,6 +48,16 @@ interface DestinationExistante {
     id: string
     created_at: string
   }
+}
+
+// Labels lisibles pour les services dans le panneau health
+const SERVICE_LABELS: Record<string, string> = {
+  microservice_local: 'Microservice DATA Tourisme',
+  supabase: 'Supabase',
+  openai: 'OpenAI',
+  dataforseo: 'DataForSEO',
+  haloscan: 'Haloscan',
+  apify: 'Apify (Instagram)',
 }
 
 // ─── Utilitaire debounce ─────────────────────────────────────────────────────
@@ -67,7 +77,6 @@ function useDebounce<T extends (...args: Parameters<T>) => void>(fn: T, delay: n
 
 export default function NouvelAuditPage() {
   const router = useRouter()
-  const supabase = createClient()
 
   // État recherche
   const [query, setQuery] = useState('')
@@ -86,7 +95,33 @@ export default function NouvelAuditPage() {
   const [launching, setLaunching] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // ── Recherche autocomplete via microservice local ──
+  // Health check
+  const [healthData, setHealthData] = useState<HealthResponse | null>(null)
+  const [healthLoading, setHealthLoading] = useState(true)
+
+  // ── Health check ──────────────────────────────────────────────────────────
+  const verifierHealth = useCallback(async () => {
+    setHealthLoading(true)
+    try {
+      const res = await fetch('/api/health')
+      if (res.ok) {
+        const data: HealthResponse = await res.json()
+        setHealthData(data)
+      } else {
+        setHealthData(null)
+      }
+    } catch {
+      setHealthData(null)
+    }
+    setHealthLoading(false)
+  }, [])
+
+  useEffect(() => {
+    verifierHealth()
+  }, [verifierHealth])
+
+  // ── Recherche autocomplete via microservice local UNIQUEMENT ──────────────
+  // Pas de fallback geo.api.gouv.fr — le SIREN doit venir du CSV local
   const rechercherCommunes = useCallback(async (q: string) => {
     if (q.length < 2) {
       setSuggestions([])
@@ -102,26 +137,14 @@ export default function NouvelAuditPage() {
         setSuggestions(data.slice(0, 8))
         setShowSuggestions(true)
       } else {
-        // Fallback : API geo.gouv.fr directement
-        const geoRes = await fetch(
-          `https://geo.api.gouv.fr/communes?nom=${encodeURIComponent(q)}&fields=nom,code,codesPostaux,codeDepartement,codeRegion,nomRegion,population&format=json&limit=8`
-        )
-        const geoData = await geoRes.json()
-        setSuggestions(geoData)
-        setShowSuggestions(true)
+        // Microservice down — l'erreur est visible dans le panneau health check
+        setSuggestions([])
+        setShowSuggestions(false)
       }
     } catch {
-      // Fallback geo.gouv.fr
-      try {
-        const res = await fetch(
-          `https://geo.api.gouv.fr/communes?nom=${encodeURIComponent(q)}&fields=nom,code,codesPostaux,codeDepartement,codeRegion,nomRegion,population&format=json&limit=8`
-        )
-        const data = await res.json()
-        setSuggestions(data)
-        setShowSuggestions(true)
-      } catch {
-        setSuggestions([])
-      }
+      // Microservice non démarré — l'erreur est visible dans le panneau health check
+      setSuggestions([])
+      setShowSuggestions(false)
     }
     setSearchLoading(false)
   }, [])
@@ -142,7 +165,7 @@ export default function NouvelAuditPage() {
     setShowSuggestions(false)
     setError(null)
 
-    // Vérification doublon via Route Handler (SIREN ou INSEE)
+    // Vérification doublon via Route Handler
     try {
       const res = await fetch(`/api/destinations/check?insee=${commune.code}`)
       if (res.ok) {
@@ -157,9 +180,15 @@ export default function NouvelAuditPage() {
     }
   }
 
+  // ── Condition de blocage du bouton "Lancer l'audit" ──
+  // SIREN obligatoire : doit être un entier de 9 chiffres issu du microservice
+  const sirenInvalide = !selected?.siren || !/^\d{9}$/.test(selected.siren)
+  const servicesCritiquesKo = healthData !== null && !healthData.ok
+  const auditBloque = sirenInvalide || servicesCritiquesKo || healthLoading
+
   // ── Lancement de l'audit ──
   async function lancerAudit(forcer = false) {
-    if (!selected) return
+    if (!selected || auditBloque) return
     setLaunching(true)
     setError(null)
     setShowDoublonModal(false)
@@ -177,7 +206,7 @@ export default function NouvelAuditPage() {
       const data = await res.json()
 
       if (!res.ok) {
-        setError(data.error || 'Erreur lors du lancement de l\'audit.')
+        setError(data.error || "Erreur lors du lancement de l'audit.")
         setLaunching(false)
         return
       }
@@ -185,9 +214,44 @@ export default function NouvelAuditPage() {
       // Redirection vers la page de progression
       router.push(`/audit/${data.auditId}/progression`)
     } catch {
-      setError('Impossible de contacter le serveur. Vérifiez que l\'app est bien lancée.')
+      setError("Impossible de contacter le serveur. Vérifiez que l'app est bien lancée.")
       setLaunching(false)
     }
+  }
+
+  // ── Rendu du statut d'un service ──
+  function renderServiceStatus(nom: string, service: ServiceStatus) {
+    const label = SERVICE_LABELS[nom] ?? nom
+    if (service.ok) {
+      return (
+        <div key={nom} className="flex items-center gap-2 text-xs">
+          <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" />
+          <span className="text-green-700 font-medium">{label}</span>
+        </div>
+      )
+    }
+    if (!service.critique) {
+      // Service optionnel en warning
+      return (
+        <div key={nom} className="flex items-start gap-2 text-xs">
+          <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0 mt-0.5" />
+          <div>
+            <span className="text-amber-700 font-medium">{label}</span>
+            <span className="text-amber-600 ml-1">— {service.message}</span>
+          </div>
+        </div>
+      )
+    }
+    // Service critique en erreur
+    return (
+      <div key={nom} className="flex items-start gap-2 text-xs">
+        <span className="w-2 h-2 rounded-full bg-red-500 shrink-0 mt-0.5" />
+        <div>
+          <span className="text-red-700 font-medium">{label}</span>
+          <span className="text-red-600 ml-1">— {service.message}</span>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -206,6 +270,62 @@ export default function NouvelAuditPage() {
         </p>
       </div>
 
+      {/* Panneau health check ── */}
+      <div className={`mb-4 rounded-lg border p-4 ${
+        healthLoading
+          ? 'border-brand-border bg-brand-bg'
+          : healthData?.ok
+            ? 'border-green-200 bg-green-50'
+            : healthData === null
+              ? 'border-amber-200 bg-amber-50'
+              : 'border-red-200 bg-red-50'
+      }`}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            {healthLoading ? (
+              <Spinner size="sm" />
+            ) : healthData?.ok ? (
+              <span className="w-2 h-2 rounded-full bg-green-500" />
+            ) : (
+              <span className="w-2 h-2 rounded-full bg-red-500" />
+            )}
+            <span className="text-sm font-semibold text-brand-navy">
+              {healthLoading
+                ? 'Vérification des services...'
+                : healthData?.ok
+                  ? 'Tous les services sont opérationnels'
+                  : healthData === null
+                    ? 'Impossible de vérifier les services'
+                    : 'Un ou plusieurs services critiques sont indisponibles'}
+            </span>
+          </div>
+          {!healthLoading && (
+            <button
+              onClick={verifierHealth}
+              className="text-xs text-brand-orange hover:underline shrink-0"
+            >
+              Revérifier
+            </button>
+          )}
+        </div>
+
+        {/* Liste des services */}
+        {healthData && (
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1.5">
+            {Object.entries(healthData.services).map(([nom, service]) =>
+              renderServiceStatus(nom, service)
+            )}
+          </div>
+        )}
+
+        {/* Message si health check inaccessible */}
+        {!healthLoading && healthData === null && (
+          <p className="text-xs text-amber-700">
+            Impossible de contacter /api/health — vérifiez que l&apos;app Next.js est démarrée.
+          </p>
+        )}
+      </div>
+
       {/* Barre de recherche */}
       <div className="card p-6 mb-4">
         <label className="block text-sm font-semibold text-brand-navy mb-3">
@@ -222,6 +342,7 @@ export default function NouvelAuditPage() {
               placeholder="Nom de la commune (ex: Annecy, Chamonix...)"
               className="input-base pr-10"
               autoFocus
+              disabled={servicesCritiquesKo && !healthLoading}
             />
             {/* Icône recherche / spinner */}
             <div className="absolute right-3 top-1/2 -translate-y-1/2">
@@ -248,6 +369,9 @@ export default function NouvelAuditPage() {
                     <span className="font-medium text-brand-navy">{commune.nom}</span>
                     <div className="text-xs text-text-secondary mt-0.5">
                       {commune.codesPostaux?.[0]} — Dép. {commune.codeDepartement}
+                      {commune.siren && (
+                        <span className="ml-2 text-text-muted">SIREN {commune.siren}</span>
+                      )}
                     </div>
                   </div>
                   {commune.population && (
@@ -301,7 +425,25 @@ export default function NouvelAuditPage() {
                 {selected.population?.toLocaleString('fr-FR') || '—'} hab.
               </p>
             </div>
+            <div>
+              <span className="text-text-muted">SIREN</span>
+              <p className={`font-mono font-semibold ${sirenInvalide ? 'text-red-600' : 'text-brand-navy'}`}>
+                {selected.siren || '—'}
+              </p>
+            </div>
           </div>
+
+          {/* Avertissement SIREN manquant */}
+          {sirenInvalide && (
+            <div className="flex items-start gap-2 p-3 mb-4 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+              <svg viewBox="0 0 20 20" className="w-4 h-4 shrink-0 mt-0.5" fill="currentColor">
+                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+              </svg>
+              <span>
+                SIREN invalide — le microservice local doit être démarré pour obtenir un SIREN réel.
+              </span>
+            </div>
+          )}
 
           {error && (
             <div className="flex items-center gap-2 p-3 mb-4 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
@@ -315,8 +457,15 @@ export default function NouvelAuditPage() {
           <div className="flex gap-3">
             <button
               onClick={() => lancerAudit(false)}
-              disabled={launching}
-              className="btn-primary flex-1 justify-center"
+              disabled={launching || auditBloque}
+              className="btn-primary flex-1 justify-center disabled:opacity-50 disabled:cursor-not-allowed"
+              title={
+                sirenInvalide
+                  ? 'SIREN invalide — démarrez le microservice'
+                  : servicesCritiquesKo
+                    ? 'Services critiques indisponibles — voir le panneau ci-dessus'
+                    : undefined
+              }
             >
               {launching ? (
                 <>
@@ -358,8 +507,11 @@ export default function NouvelAuditPage() {
                 <p className="font-semibold text-amber-800">{doublon.nom} a déjà été auditée</p>
                 {doublon.audit?.created_at && (
                   <p className="text-sm text-amber-700 mt-1">
-                    Dernier audit : {new Date(doublon.audit.created_at).toLocaleDateString('fr-FR', {
-                      day: 'numeric', month: 'long', year: 'numeric'
+                    Dernier audit :{' '}
+                    {new Date(doublon.audit.created_at).toLocaleDateString('fr-FR', {
+                      day: 'numeric',
+                      month: 'long',
+                      year: 'numeric',
                     })}
                   </p>
                 )}
@@ -373,10 +525,10 @@ export default function NouvelAuditPage() {
             <div className="flex gap-3 pt-2">
               <button
                 onClick={() => lancerAudit(true)}
-                disabled={launching}
-                className="btn-primary flex-1 justify-center"
+                disabled={launching || auditBloque}
+                className="btn-primary flex-1 justify-center disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {launching ? <Spinner size="sm" color="white" /> : 'Relancer l\'audit'}
+                {launching ? <Spinner size="sm" color="white" /> : "Relancer l'audit"}
               </button>
               <button
                 onClick={() => setShowDoublonModal(false)}
