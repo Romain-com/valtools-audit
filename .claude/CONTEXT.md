@@ -126,6 +126,7 @@ POST https://api.dataforseo.com/v3/dataforseo_labs/google/ranked_keywords/live
 ```
 ⚠️ Position = `item.ranked_serp_element.serp_item.rank_group`
 ⚠️ Métriques globales domaine = `result[0].metrics.organic` (pas `items[0].metrics.organic`)
+⚠️ **ETV absent** : cet endpoint ne retourne PAS de champ `etv`. Calculer côté serveur : `Math.round(searchVolume × CTR(position))`. CTR : pos1=28%, pos2=15%, pos3=11%, pos4=8%, pos5=7%, pos6=5%, pos7=4%, pos8-9=3%, pos10=2%, pos11-20=1%, pos21+=0.5%.
 
 ---
 
@@ -623,12 +624,18 @@ app/api/territoire/
 ### Algorithme prorata taxe EPCI — 3 méthodes
 
 ```
-1. 'residences_secondaires' : RS_commune / RS_EPCI   (les deux RS connues)
-2. 'rs_hybride'             : RS pour communes connues, population pour communes sans RS
-3. 'population'             : RS_EPCI inconnue → pop_commune / pop_EPCI
+1. 'residences_secondaires' : RS_commune / RS_EPCI                      (les deux RS connues — vert)
+2. 'rs_hybride'             : résidu × (cap_etab_commune / cap_total)    (RS inconnue, cap dispo — bleu)
+                              résidu × (pop_commune / pop_total)          (ni RS ni cap — bleu dégradé)
+3. 'population'             : RS_EPCI inconnue → pop_commune / pop_EPCI  (orange)
 ```
 
-⚠️ Délai Mélodi : 400ms entre appels RS pour respecter le rate limit (~150 req/min).
+**Pré-chargement RS EPCI** : fetchResidencesSecondairesEPCI appelée **une seule fois par EPCI unique**, séquentiellement, AVANT le Promise.all communes — évite le race condition Mélodi si plusieurs communes partagent le même EPCI.
+
+**construireMapsEPCI** : fetche RS + DS_TOUR_CAP pour toutes les communes EPCI non sélectionnées (séquentiel, 400ms entre appels, 2 calls/commune). Cap = `total_etab` (hôtels + campings + autres hébergements).
+
+⚠️ `fetchResidencesSecondaires` retourne `null` si Mélodi n'a pas de données (≠ `0` qui signifie 0 RS réelles).
+⚠️ Délai Mélodi : 400ms entre appels pour respecter le rate limit (~150 req/min).
 ⚠️ Plafond communes inconnues EPCI : MAX_COMMUNES_INCONNUES = 40 (anti-timeout).
 ⚠️ DS_TOUR_CAP : GEO format `2025-COM-{code_insee}` | DS_TOUR_FREQ : `2023-DEP-{code}` + UNIT_MULT=3 (× 1000).
 
@@ -654,6 +661,287 @@ Les comptages DATA Tourisme et INSEE DS_TOUR_CAP sont fusionnés par catégorie 
 
 Tri multi-colonnes sur les 5 tableaux (état séparé par tableau).
 CSV : séparateur `;`, BOM UTF-8 pour Excel.
+
+---
+
+## Onglet Visibilité digitale — Vue 1 : Écosystème digital
+
+### Philosophie
+
+Outil indépendant de l'audit principal. L'utilisateur saisit un nom de destination, l'outil détecte automatiquement les acteurs officiels présents sur Google (OT, station, mairie, parc…), les fait valider/ajuster, puis enrichit chaque site avec ses métriques de visibilité SEO.
+
+**Ce n'est pas un audit — c'est une cartographie.** Pas de SIREN, pas d'orchestrateur. Flux en 3 étapes : Détection → Validation → Résultats. Sauvegarde automatique en base Supabase à la fin de l'étape 3.
+
+### Flux utilisateur
+
+```
+1. Saisie destination (ex : "Les 7 Laux")
+2. Détection : DataForSEO SERP (organic + local_pack) + classification OpenAI
+3. Validation : liste éditable — supprimer, changer catégorie, ajouter manuellement
+4. Enrichissement : Haloscan bulk → trafic + mots-clés + score d'autorité
+5. Tableau final (trié par authorityScore) + phrase de synthèse
+6. Sauvegarde automatique → ecosystem_analyses (Supabase)
+```
+
+### Architecture fichiers
+
+```
+app/ecosystem/page.tsx                 → Server Component — auth check → EcosystemView
+
+app/api/ecosystem/
+├── serp/route.ts                      → POST {keyword} — DataForSEO SERP organic + local_pack
+├── classify/route.ts                  → POST {sites} — OpenAI gpt-5-mini + fallback regex
+├── enrich/route.ts                    → POST {domains} — Haloscan bulk
+├── save/route.ts                      → POST — insère dans ecosystem_analyses
+└── history/route.ts                   → GET 20 dernières | DELETE par id
+
+components/ecosystem/
+├── EcosystemView.tsx                  → Orchestrateur 3 étapes + historique + sauvegarde
+├── StepDetection.tsx                  → Formulaire + spinner animé
+├── StepValidation.tsx                 → Liste éditable + ajout manuel
+├── StepResults.tsx                    → Tableau trié + synthèse + AuthorityBar
+├── SiteCard.tsx                       → Carte individuelle (étape validation)
+└── AuthorityBar.tsx                   → Barre de progression 0-100 (rouge/orange/vert)
+
+lib/scores.ts                          → computeAuthorityScore(serpPosition, totalTraffic)
+lib/formatters.ts                      → formatTraffic(n), formatPosition(n)
+types/ecosystem.ts                     → DetectedSite, ClassifiedSite, EnrichedSite, HaloscanData
+```
+
+### APIs utilisées
+
+| Étape | API | Endpoint | Usage |
+|-------|-----|----------|-------|
+| Détection | DataForSEO SERP | `/v3/serp/google/organic/live/advanced` | depth:20, organic + local_pack |
+| Classification | OpenAI | `/v1/responses` (gpt-5-mini) | Fallback regex si erreur |
+| Enrichissement | Haloscan | `/api/domains/bulk` | totalTraffic, uniqueKeywords, top10, top3 |
+
+⚠️ DataForSEO SERP : capturer **aussi** `type === 'local_pack'` — la mairie/OT y apparaît souvent sans figurer en organique.
+
+⚠️ Haloscan bulk endpoint : `POST /api/domains/bulk` avec `{ inputs: [...], mode: "auto", order_by: "total_traffic", lineCount: 50 }`.
+
+### Score d'autorité (lib/scores.ts)
+
+```ts
+scorePosition = serpPosition !== null ? Math.max(0, 100 - (serpPosition - 1) * 10) : 0
+scoreTraffic  = totalTraffic > 0 ? Math.min(100, Math.log10(totalTraffic + 1) * 25) : 0
+authorityScore = Math.round(scorePosition * 0.6 + scoreTraffic * 0.4)
+```
+
+Barre de couleur : rouge < 34 / orange 34–66 / vert ≥ 67.
+
+### Catégories de sites
+
+| Code | Libellé | Style badge |
+|------|---------|-------------|
+| `OT` | Office de tourisme | bg-blue-100 text-blue-800 |
+| `STATION` | Station / Domaine skiable | bg-green-100 text-green-800 |
+| `INSTITUTIONNEL` | Mairie, département, région | bg-purple-100 text-purple-800 |
+| `PARC` | Parc naturel régional/national | bg-emerald-100 text-emerald-800 |
+| `AUTRE_OFFICIEL` | Autre acteur officiel | bg-gray-100 text-gray-700 |
+
+### Schéma Supabase — Table ecosystem_analyses
+
+```sql
+id          UUID PK   -- gen_random_uuid()
+destination TEXT      -- nom saisi par l'utilisateur
+sites       JSONB     -- tableau EnrichedSite[]
+couts_api   JSONB     -- coûts serp + classify + enrich
+created_by  UUID FK → profiles
+created_at  TIMESTAMPTZ
+```
+
+Migration : `supabase/migrations/006_ecosystem_analyses.sql`
+RLS : select + insert + delete pour tout utilisateur authentifié.
+
+### Coûts API estimés par analyse
+
+| API | Coût unitaire | Notes |
+|-----|--------------|-------|
+| DataForSEO SERP | ~0.003 $ | 1 requête depth:20 |
+| OpenAI gpt-5-mini | ~0.0015 $ | Classification ~20 sites |
+| Haloscan bulk | 1 crédit / site trouvé | Facturation sites indexés uniquement |
+
+### Historique dans l'UI
+
+- Panneau latéral sur l'étape 1 — 20 analyses récentes (destination + nb acteurs + date)
+- Clic → recharge directement en étape Résultats
+- Croix au survol → suppression (DELETE `/api/ecosystem/history`)
+- Badge "Sauvegardé" dans la barre d'étapes après confirmation de l'insert Supabase
+
+---
+
+## Onglet Visibilité digitale — Vue 3 : Analyse d'un lieu touristique
+
+### Philosophie
+
+Outil indépendant de Vue 1. L'utilisateur saisit le nom d'un lieu touristique (base nautique, funiculaire, site naturel…) et sa commune de rattachement. L'outil analyse la visibilité digitale du lieu et la compare à celle de sa commune.
+
+**Trois questions clés :**
+1. Le lieu existe-t-il digitalement ? (site officiel, fiche GMB)
+2. La commune/OT valorise-t-elle ce lieu dans ses contenus Google ?
+3. Comment se positionne le lieu face à sa commune sur le plan SEO ?
+
+### Flux utilisateur
+
+```
+1. Saisie manuelle : nom du lieu + commune de rattachement
+2. Analyse parallèle : SERP lieu (organic + Maps) + SERP commune
+3. Enrichissement : Haloscan bulk (lieu + commune en un appel)
+4. Diagnostic GPT : headline choc + 2-3 recommandations actionnables
+5. Résultats : DiagnosticBanner + SectionExistence + SectionCommuneContent + SectionComparison
+```
+
+### Architecture fichiers
+
+```
+app/place/page.tsx                    → Server Component — auth check → PlaceView
+
+app/api/place/
+├── serp-place/route.ts               → POST {placeName, commune} — SERP organic + Maps + classification GPT
+├── serp-commune/route.ts             → POST {commune, placeName} — SERP organic commune + détection mentionsPlace
+├── ranked-place/route.ts             → POST {placeDomain, communeDomain} — Haloscan bulk (1 appel pour les 2)
+├── diagnostic-insights/route.ts      → POST contexte diagnostic — OpenAI headline + recommandations
+└── detect-commune/route.ts           → (non utilisé) — conservé si besoin futur
+
+components/place/
+├── PlaceView.tsx                     → Orchestrateur — saisie → analyse → résultats
+├── StepInput.tsx                     → Formulaire 2 champs (lieu + commune) + bouton Lancer
+├── StepResults.tsx                   → Résultats scrollables (4 sections)
+├── DiagnosticBanner.tsx              → Headline GPT + 3 badges + recommandations
+├── SectionExistence.tsx              → SERP lieu + fiche GMB côte à côte
+├── SectionCommuneContent.tsx         → SERP commune avec mise en évidence des mentions du lieu
+└── SectionComparison.tsx             → Tableau comparatif Haloscan + phrase de contexte
+
+components/layout/VisibiliteTabNav.tsx → Onglets partagés Écosystème / Lieu touristique
+
+types/place.ts                        → CommuneDetection, PlaceSerpResult, PlaceGMB, CommuneSerpResult,
+                                         PlaceHaloscanData, PlaceDiagnostic, PlaceData
+```
+
+### APIs utilisées
+
+| Étape | API | Endpoint | Usage |
+|-------|-----|----------|-------|
+| SERP lieu | DataForSEO | `/v3/serp/google/organic/live/advanced` | depth:10 |
+| GMB lieu | DataForSEO | `/v3/serp/google/maps/live/advanced` | depth:10, 1 tâche |
+| Classification acteurs | OpenAI gpt-5-mini | `/v1/chat/completions` | LIEU_OFFICIEL / COMMUNE_OT / AGGREGATEUR / MEDIA / AUTRE |
+| SERP commune | DataForSEO | `/v3/serp/google/organic/live/advanced` | depth:10 |
+| Métriques SEO | Haloscan | `/api/domains/bulk` | lieu + commune en un seul appel |
+| Diagnostic | OpenAI gpt-5-mini | `/v1/chat/completions` | headline + recommandations |
+
+### Types d'acteurs SERP (PlaceSerpResult.actorType)
+
+| Code | Description |
+|------|-------------|
+| `LIEU_OFFICIEL` | Site officiel du lieu lui-même |
+| `COMMUNE_OT` | Commune, mairie, office de tourisme |
+| `AGGREGATEUR` | Viator, GetYourGuide, Tripadvisor… |
+| `MEDIA` | Presse, blogs, guides |
+| `AUTRE` | Tout le reste |
+
+### Calcul du diagnostic (côté client, PlaceView.tsx)
+
+```ts
+placeExists = placeSerp.some(LIEU_OFFICIEL) || placeGMB.exists
+communeMentionsPlace = communeSerp.some(s => s.mentionsPlace)
+
+// mentionsPlace : titre ou description SERP commune contient le 1er mot significatif du lieu
+// (mots génériques ignorés : base, lac, site, parc, domaine…)
+
+placeVisibilityVsCommune :
+  !placeFound          → INEXISTANTE
+  traffic ≥ 75%        → SUPERIEURE
+  traffic ≥ 25%        → EQUIVALENTE
+  sinon                → INFERIEURE
+```
+
+### Navigation
+
+- Navbar : lien unique "Visibilité digitale" → `/ecosystem`, actif sur `/ecosystem` ET `/place`
+- `VisibiliteTabNav` : sous-navigation commune (onglets "Écosystème destination" | "Lieu touristique")
+- Ajoutée en haut de `app/ecosystem/page.tsx` ET `app/place/page.tsx`
+
+### Contraintes gpt-5-mini (découvertes en production)
+
+⚠️ `max_tokens` → utiliser `max_completion_tokens` à la place.
+⚠️ `temperature` → non supporté (valeur par défaut 1 uniquement, ne pas passer ce paramètre).
+⚠️ `response_format: { type: 'json_object' }` → retourne `content: ""` → ne pas utiliser. Demander le JSON dans le prompt + parser avec `.replace(/```json\n?|```/g, '').trim()`.
+
+### Coûts API estimés par analyse
+
+| API | Coût | Nb appels |
+|-----|------|-----------|
+| DataForSEO SERP lieu | ~0.003 $ | 1 |
+| DataForSEO Maps | ~0.003 $ | 1 |
+| OpenAI classification | ~0.001 $ | 1 |
+| DataForSEO SERP commune | ~0.003 $ | 1 |
+| Haloscan bulk | 1-2 crédits | 1 |
+| OpenAI diagnostic | ~0.001 $ | 1 |
+
+---
+
+## Onglet Visibilité digitale — Vue 2 : Score de visibilité
+
+### Philosophie
+
+Outil d'analyse SERP pour une destination. L'utilisateur saisit un nom de destination + domaine de référence. L'outil lance 1 SERP principal + 7 SERPs commerciales (5 hébergement + 2 activités) et affiche : visibilité organique, présence commerciale (paid/hotels_pack/compare_sites), PAA, Knowledge Graph, avis Google, SERP consolidée.
+
+### Architecture fichiers
+
+```
+app/visibility/page.tsx                       → Server Component auth guard
+
+app/api/visibility/
+├── serp-main/route.ts                        → POST {keyword, referenceDomain} — SERP principal
+└── serp-commercial/route.ts                  → POST {queries, referenceDomain, section} — 7 SERPs parallèles
+
+components/visibility/
+├── VisibilityView.tsx                        → Orchestrateur UI — saisie → analyse → 3 sections
+├── SectionNominal.tsx                        → Requête nominale — organic, PAA, KG, avis, commercial
+├── SectionCommercial.tsx                     → Hébergement + Activités — SERP consolidée + commercial + PAA
+├── ConsolidatedSerpTable.tsx                 → Tableau SERP consolidé (domaines × fréquence × score)
+└── PaaAccordion.tsx                          → Questions PAA par requête
+
+lib/commercial-queries.ts                     → Génération des 7 requêtes commerciales (5 héb + 2 act)
+types/visibility.ts                           → Tous les types de la vue
+```
+
+### Types clés (`types/visibility.ts`)
+
+```ts
+// Présence commerciale unifiée par requête
+export interface HotelsPackItem { title, displayedPrice, domain, url, isPaid, rating }
+export interface CompareSiteItem { title, url, domain, source }
+export interface SerpCommercialPresence { paidAds: PaidAd[], hotelsPack: HotelsPackItem[], compareSites: CompareSiteItem[] }
+export interface PaidAdByQuery { queryId, queryLabel, queryKeyword, presence: SerpCommercialPresence }
+```
+
+### Extraction depuis DataForSEO (serp-main + serp-commercial)
+
+L'endpoint `/serp/google/paid/live/advanced` n'existe pas (retourne 40402 Invalid Path).
+Les items payants sont inclus dans la réponse organique (`/serp/google/organic/live/advanced`).
+
+**3 types d'items commerciaux à extraire :**
+- `type === 'paid'` → annonces Google Ads textuelles
+- `type === 'hotels_pack'` → bloc Google Hotels (agrégateur hébergements) — items souvent sans `domain`/`url` (null)
+- `type === 'compare_sites'` → sites OTA mis en avant par Google (Airbnb, Ski Planet…) — ont `domain` et `url`
+
+⚠️ `paid` items souvent absents : DataForSEO crawle depuis des serveurs neutres — les annonces géo-personnalisées visibles dans le navigateur n'y apparaissent pas.
+⚠️ `hotels_pack` et `compare_sites` sont plus fiables et couvrent la quasi-totalité des cas d'accommodation.
+⚠️ Filtrer `compare_sites.items` : ne garder que ceux qui ont `url` ET `domain` (évite les items incomplets).
+
+### Métriques SERP consolidée (`serp-commercial/route.ts`)
+
+- `avgPosition` = moyenne des **meilleures positions par SERP** (pas toutes les apparitions)
+- `effectiveScore` = `avgPosition / frequencyRatio` — pénalise les domaines absents sur beaucoup de requêtes
+- `frequencyRatio` = `distinctSerps / totalSerps`
+- Tri : `effectiveScore` croissant (meilleur en tête)
+
+### Volumes de recherche
+
+Appel optionnel `keywords_data/google_ads/search_volume/live` en fin de route commerciale.
+Fallback silencieux si indisponible — la UI affiche simplement rien.
 
 ---
 

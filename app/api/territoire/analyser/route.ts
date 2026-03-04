@@ -146,6 +146,8 @@ async function fetchResidencesSecondaires(code_insee: string): Promise<number | 
       timeout: 15000,
     })
     const obs = reponse.data?.observations ?? []
+    // Pas de données dans Mélodi pour cette commune → null (distinct de "0 RS")
+    if (obs.length === 0) return null
     const total = obs.find(
       (o: Record<string, unknown>) => (o.dimensions as Record<string, string>)?.TDW === '_T'
     ) ?? obs[0]
@@ -230,6 +232,29 @@ interface ResultatTaxe {
   nuitees_estimees: number
 }
 
+// ─── Types Tourinsoft ──────────────────────────────────────────────────────────
+
+interface StationTourinsoft {
+  id: string; nom: string; lat: number; lng: number; cp_ot: string
+  alt_bas: number; alt_haut: number; vtt: boolean; nom_ot: string
+  adresse_ot: string; accroche: string; desc_hiver: string; desc_ete: string
+  desc_act_hiver: string; desc_act_ete: string; desc_heb: string; desc_res: string
+}
+interface HebergementTourinsoft { id: string; nom: string; type: string; commune: string; code_postal: string; station_id: string; lits: number; lat: number; lng: number }
+interface ActiviteTourinsoft    { id: string; nom: string; type: string; commune: string; code_postal: string; station_id: string; lat: number; lng: number }
+interface CommerceTourinsoft    { id: string; nom: string; type: string; commune: string; code_postal: string; station_id: string; lat: number; lng: number }
+
+interface TourinsofrCommune {
+  station: StationTourinsoft | null
+  hebergements: HebergementTourinsoft[]
+  activites: ActiviteTourinsoft[]
+  commerces: CommerceTourinsoft[]
+  nb_hebergements: number
+  nb_activites: number
+  nb_commerces: number
+  total_lits: number
+}
+
 interface ResultatCommune {
   commune: {
     nom: string
@@ -243,6 +268,7 @@ interface ResultatCommune {
   residences_secondaires: number | null  // RP 2022 Mélodi INSEE — null si données absentes
   insee_cap: CapaciteINSEE | null        // DS_TOUR_CAP — capacité officielle par type
   freq_departement: FrequentationINSEE | null  // DS_TOUR_FREQ — nuitées annuelles du département
+  tourinsoft: TourinsofrCommune | null   // données ANMSM (station + stock) — null si hors périmètre
   erreur?: string
 }
 
@@ -259,6 +285,41 @@ async function fetchStocks(code_insee: string): Promise<{ hebergements: Etabliss
   return {
     hebergements: bruts.filter((e) => e.categorie === 'hebergements'),
     poi: bruts.filter((e) => e.categorie !== 'hebergements'),
+  }
+}
+
+// ─── Appel microservice Tourinsoft ────────────────────────────────────────────
+
+async function fetchTourinsoft(code_postal: string): Promise<TourinsofrCommune | null> {
+  try {
+    const reponse = await axios.get(`${MICROSERVICE_URL}/tourinsoft/resume`, {
+      params: { code_postal },
+      timeout: 5000,
+    })
+    const d = reponse.data
+    // Si aucune station et aucun hébergement, pas de données ANMSM pour cette commune
+    if (!d.station && d.nb_hebergements === 0 && d.nb_activites === 0) return null
+
+    // Récupérer les listes complètes en parallèle
+    const [heb, act, com] = await Promise.all([
+      axios.get(`${MICROSERVICE_URL}/tourinsoft/hebergements`, { params: { code_postal }, timeout: 5000 }),
+      axios.get(`${MICROSERVICE_URL}/tourinsoft/activites`,    { params: { code_postal }, timeout: 5000 }),
+      axios.get(`${MICROSERVICE_URL}/tourinsoft/commerces`,    { params: { code_postal }, timeout: 5000 }),
+    ])
+
+    return {
+      station:         d.station,
+      hebergements:    heb.data.items ?? [],
+      activites:       act.data.items ?? [],
+      commerces:       com.data.items ?? [],
+      nb_hebergements: heb.data.nb ?? 0,
+      nb_activites:    act.data.nb ?? 0,
+      nb_commerces:    com.data.nb ?? 0,
+      total_lits:      heb.data.total_lits ?? 0,
+    }
+  } catch {
+    // Microservice indisponible ou commune hors périmètre ANMSM — pas bloquant
+    return null
   }
 }
 
@@ -307,40 +368,55 @@ async function fetchCommunesEPCI(siren_epci: string): Promise<{ code: string; po
 }
 
 /**
- * Construit la map code_insee → RS pour toutes les communes d'un EPCI.
- * Réutilise les RS déjà récupérées pour les communes sélectionnées.
- * Fetch séquentiel avec délai pour respecter le rate limit Mélodi.
+ * Construit les maps code_insee → RS et code_insee → nb_établissements pour toutes les communes d'un EPCI.
+ * Réutilise les données déjà connues pour les communes sélectionnées.
+ * Fetch séquentiel avec délai pour respecter le rate limit Mélodi (~150 req/min).
  * Plafonné à MAX_COMMUNES_INCONNUES pour éviter les timeouts.
+ *
+ * La capacité touristique (total_etab) remplace la population dans la passe 2 hybride :
+ * elle est bien plus représentative de l'activité touristique que le nombre d'habitants.
  */
 const MAX_COMMUNES_INCONNUES = 40
-const DELAI_MELODI_MS = 400 // ~150 req/min — en deçà du rate limit Mélodi
+const DELAI_MELODI_MS = 400 // ~150 req/min (1 appel toutes les 400ms)
 
-async function construireMapRSEPCI(
+async function construireMapsEPCI(
   communes_epci: { code: string; population: number }[],
   rs_deja_connues: Map<string, number | null>,
-): Promise<Map<string, number | null>> {
-  const map = new Map<string, number | null>(rs_deja_connues)
+  cap_deja_connues: Map<string, number | null>,
+): Promise<{ rs: Map<string, number | null>; cap: Map<string, number | null> }> {
+  const rs_map = new Map<string, number | null>(rs_deja_connues)
+  const cap_map = new Map<string, number | null>(cap_deja_connues)
 
   const codes_inconnus = communes_epci
     .map((c) => c.code)
-    .filter((code) => !map.has(code))
+    .filter((code) => !rs_map.has(code))
     .slice(0, MAX_COMMUNES_INCONNUES)
 
-  console.log(`[ProratHybride] Fetch RS pour ${codes_inconnus.length} communes non sélectionnées (/${communes_epci.length} total EPCI)`)
+  console.log(`[ProratHybride] Fetch RS+Cap pour ${codes_inconnus.length} communes non sélectionnées (/${communes_epci.length} total EPCI)`)
 
   for (const code of codes_inconnus) {
+    // RS commune
     await new Promise((resolve) => setTimeout(resolve, DELAI_MELODI_MS))
     const rs = await fetchResidencesSecondaires(code)
-    map.set(code, rs)
+    rs_map.set(code, rs)
+
+    // Capacité touristique officielle (DS_TOUR_CAP)
+    await new Promise((resolve) => setTimeout(resolve, DELAI_MELODI_MS))
+    const cap = await fetchCapaciteINSEE(code)
+    cap_map.set(code, cap?.total_etab ?? null)
   }
 
-  return map
+  return { rs: rs_map, cap: cap_map }
 }
 
 /**
  * Calcule la part d'une commune dans le montant EPCI via l'algorithme hybride :
  *   Passe 1 — communes avec RS connue : part = RS_commune / RS_EPCI
- *   Passe 2 — communes sans RS        : part = (RS_EPCI - RS_total_connu) / RS_EPCI × (pop_commune / pop_sans_rs)
+ *   Passe 2 — communes sans RS        : part = résidu × (cap_commune / cap_total_sans_rs)
+ *                                       Fallback population si aucune cap disponible
+ *
+ * Utilise le nombre d'établissements touristiques officiels (DS_TOUR_CAP) en passe 2
+ * plutôt que la population permanente, qui est un proxy inadapté à l'activité touristique.
  *
  * Garanti : sum(parts) = 1 sur l'ensemble de l'EPCI si toutes les RS sont connues.
  */
@@ -351,22 +427,30 @@ function calculerPartHybride(
   rs_epci: number,
   communes_epci: { code: string; population: number }[],
   rs_par_commune: Map<string, number | null>,
+  cap_par_commune: Map<string, number | null>,
 ): { part: number; methode: 'residences_secondaires' | 'rs_hybride' | 'population' } {
   if (rs_epci <= 0) {
-    // Fallback : RS EPCI nulle ou absente
+    // Fallback : RS EPCI nulle → capacité touristique ou population
+    const cap_total = communes_epci.reduce((s, c) => s + (cap_par_commune.get(c.code) ?? 0), 0)
+    const cap_commune = cap_par_commune.get(code_commune) ?? 0
+    if (cap_total > 0) {
+      return { part: cap_commune / cap_total, methode: 'population' }
+    }
     const pop_total = communes_epci.reduce((s, c) => s + c.population, 0)
     return { part: pop_total > 0 ? pop_commune / pop_total : 0, methode: 'population' }
   }
 
-  // Passe 1 : somme des RS connues et population des communes sans RS
+  // Passe 1 : somme des RS connues + total cap/pop pour les communes sans RS
   let rs_total_connu = 0
-  let pop_sans_rs = 0
+  let cap_sans_rs = 0    // capacité totale des communes sans RS (dénominateur passe 2)
+  let pop_sans_rs = 0    // population idem (fallback si pas de cap)
 
   for (const c of communes_epci) {
     const rs = rs_par_commune.get(c.code)
     if (rs !== null && rs !== undefined && rs > 0) {
       rs_total_connu += rs
     } else {
+      cap_sans_rs += cap_par_commune.get(c.code) ?? 0
       pop_sans_rs += c.population
     }
   }
@@ -376,8 +460,19 @@ function calculerPartHybride(
     return { part: rs_commune / rs_epci, methode: 'residences_secondaires' }
   }
 
-  // Cas : notre commune n'a pas de RS → passe 2 (population sur montant résiduel)
+  // Cas : notre commune n'a pas de RS → passe 2 (capacité touristique sur montant résiduel)
   const part_rs_non_attribuee = Math.max(0, rs_epci - rs_total_connu) / rs_epci
+  const cap_commune = cap_par_commune.get(code_commune) ?? 0
+
+  if (cap_sans_rs > 0) {
+    // Prorata par nombre d'établissements touristiques officiels — bien plus pertinent que la population
+    return {
+      part: part_rs_non_attribuee * (cap_commune / cap_sans_rs),
+      methode: 'rs_hybride',
+    }
+  }
+
+  // Dernier fallback : population (si aucune donnée DS_TOUR_CAP disponible)
   if (pop_sans_rs <= 0) {
     return { part: 0, methode: 'rs_hybride' }
   }
@@ -464,27 +559,84 @@ async function calculerTaxe(
   }
 }
 
+// ─── Conversion Tourinsoft → format Etablissement ────────────────────────────
+
+function tourinsofrVersEtablissements(ts: TourinsofrCommune): {
+  hebergements: Etablissement[]
+  poi: Etablissement[]
+} {
+  const hebergements: Etablissement[] = ts.hebergements.map((h) => ({
+    uuid: h.id,
+    nom: h.nom,
+    categorie: 'hebergements' as const,
+    sous_categorie: h.type.toLowerCase().replace(/[^a-z0-9]/g, '_'),
+    telephone: null,
+    adresse: null,
+    code_postal: h.code_postal,
+    lat: h.lat,
+    lng: h.lng,
+    capacite: h.lits || null,
+  }))
+
+  const poi: Etablissement[] = [
+    ...ts.activites.map((a) => ({
+      uuid: a.id,
+      nom: a.nom,
+      categorie: 'activites' as const,
+      sous_categorie: a.type.toLowerCase().replace(/[^a-z0-9]/g, '_'),
+      telephone: null,
+      adresse: null,
+      code_postal: a.code_postal,
+      lat: a.lat,
+      lng: a.lng,
+      capacite: null,
+    })),
+    ...ts.commerces.map((c) => ({
+      uuid: c.id,
+      nom: c.nom,
+      categorie: 'services' as const,
+      sous_categorie: 'commerce',
+      telephone: null,
+      adresse: null,
+      code_postal: c.code_postal,
+      lat: c.lat,
+      lng: c.lng,
+      capacite: null,
+    })),
+  ]
+
+  return { hebergements, poi }
+}
+
 // ─── Analyse d'une commune ────────────────────────────────────────────────────
 
+// epci et rs_epci sont pré-chargés avant le Promise.all pour éviter les appels
+// Mélodi en rafale sur le même EPCI (rate limit Mélodi ~30 req/min).
 async function analyserCommune(
   commune: CommuneInput,
-  freq_departement: FrequentationINSEE | null
+  freq_departement: FrequentationINSEE | null,
+  epci: InfosEpci | null,
+  rs_epci: number | null,
 ): Promise<ResultatCommune> {
   try {
-    // Appels non-Mélodi en parallèle (pas de rate limit)
-    const [stocks, epci] = await Promise.all([
+    // Stocks DATA Tourisme + données Tourinsoft en parallèle (pas de rate limit)
+    const [stocks, tourinsoft] = await Promise.all([
       fetchStocks(commune.code_insee),
-      fetchEpci(commune.code_insee),
+      fetchTourinsoft(commune.code_postal),
     ])
 
-    // Appels Mélodi séquentiels pour respecter le rate limit 30 req/min
-    // (DS_RP_LOGEMENT_PRINC commune → EPCI → DS_TOUR_CAP — séquentiels pour éviter la rafale)
+    // Priorité Tourinsoft si disponible — sinon fallback DATA Tourisme
+    const { hebergements, poi } = tourinsoft
+      ? tourinsofrVersEtablissements(tourinsoft)
+      : stocks
+
+    // Appels Mélodi séquentiels pour respecter le rate limit
+    // (RS commune → capacité touristique — RS EPCI est pré-chargé, pas refetché ici)
     const residences_secondaires = await fetchResidencesSecondaires(commune.code_insee)
-    const residences_secondaires_epci = epci ? await fetchResidencesSecondairesEPCI(epci.siren_epci) : null
     const insee_cap = await fetchCapaciteINSEE(commune.code_insee)
 
-    // Taxe de séjour (séquentielle car dépend de epci + résidences secondaires)
-    const taxe = await calculerTaxe(commune, epci, residences_secondaires, residences_secondaires_epci)
+    // Taxe de séjour (dépend de epci + résidences secondaires — déjà pré-chargés)
+    const taxe = await calculerTaxe(commune, epci, residences_secondaires, rs_epci)
 
     return {
       commune: {
@@ -493,12 +645,13 @@ async function analyserCommune(
         code_postal: commune.code_postal,
         code_departement: commune.code_departement,
       },
-      hebergements: stocks.hebergements,
-      poi: stocks.poi,
+      hebergements,
+      poi,
       taxe,
       residences_secondaires,
       insee_cap,
       freq_departement,
+      tourinsoft,
     }
   } catch (err) {
     console.error(`[Territoire/Analyser] Erreur commune ${commune.nom} :`, err)
@@ -515,6 +668,7 @@ async function analyserCommune(
       residences_secondaires: null,
       insee_cap: null,
       freq_departement: null,
+      tourinsoft: null,
       erreur: err instanceof Error ? err.message : 'Erreur inconnue',
     }
   }
@@ -535,7 +689,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Maximum 50 communes par requête' }, { status: 400 })
     }
 
-    // Pré-chargement DS_TOUR_FREQ : une requête par département unique (évite les doublons)
+    // ── Pré-chargements (avant le Promise.all communes) ──────────────────────
+
+    // 1. Fréquentation touristique par département (1 appel par dépt unique)
     const deptsUniques = [...new Set(communes.map((c) => c.code_departement).filter(Boolean))]
     const freqParDept = new Map<string, FrequentationINSEE | null>()
     await Promise.all(
@@ -545,9 +701,36 @@ export async function POST(req: NextRequest) {
       })
     )
 
-    // Analyse en parallèle de toutes les communes
+    // 2. Infos EPCI pour toutes les communes (microservice — pas de rate limit)
+    const epciParCommune = new Map<string, InfosEpci | null>()
+    await Promise.all(
+      communes.map(async (c) => {
+        const epci = await fetchEpci(c.code_insee)
+        epciParCommune.set(c.code_insee, epci)
+      })
+    )
+
+    // 3. RS EPCI : une seule requête par EPCI unique, séquentielle (rate limit Mélodi)
+    // Évite les appels en rafale quand plusieurs communes partagent le même EPCI.
+    const sirenEpciUniques = [...new Set(
+      [...epciParCommune.values()]
+        .filter((e): e is InfosEpci => e !== null)
+        .map((e) => e.siren_epci)
+        .filter(Boolean)
+    )]
+    const rsEpciMap = new Map<string, number | null>()
+    for (const siren of sirenEpciUniques) {
+      const rs = await fetchResidencesSecondairesEPCI(siren)
+      rsEpciMap.set(siren, rs)
+    }
+
+    // ── Analyse en parallèle (epci + rs_epci déjà connus) ───────────────────
     const resultats = await Promise.all(
-      communes.map((c) => analyserCommune(c, freqParDept.get(c.code_departement) ?? null))
+      communes.map((c) => {
+        const epci = epciParCommune.get(c.code_insee) ?? null
+        const rs_epci = epci?.siren_epci ? (rsEpciMap.get(epci.siren_epci) ?? null) : null
+        return analyserCommune(c, freqParDept.get(c.code_departement) ?? null, epci, rs_epci)
+      })
     )
 
     // ── Enrichissement : prorata hybride RS+population sur EPCI complet ────────
@@ -587,8 +770,8 @@ export async function POST(req: NextRequest) {
     for (const siren_epci of epciUniques) {
       const communesCetEPCI = communesEPCI.filter((c) => c.siren_epci === siren_epci)
 
-      // RS totale de l'EPCI (dénominateur commun)
-      const rs_epci = await fetchResidencesSecondairesEPCI(siren_epci)
+      // RS totale de l'EPCI — réutilise la valeur pré-chargée (pas de re-fetch)
+      const rs_epci = rsEpciMap.get(siren_epci) ?? null
       if (!rs_epci) {
         console.warn(`[ProratHybride] RS EPCI absente pour ${siren_epci} — prorata population conservé`)
         continue
@@ -601,14 +784,18 @@ export async function POST(req: NextRequest) {
         continue
       }
 
-      // RS déjà connues pour nos communes sélectionnées (évite de re-fetcher)
+      // RS et capacité touristique déjà connues pour les communes sélectionnées
       const rs_deja_connues = new Map<string, number | null>()
+      const cap_deja_connues = new Map<string, number | null>()
       for (const c of communesCetEPCI) {
         rs_deja_connues.set(c.code_insee, c.rs_commune)
+        // Capacité touristique officielle (DS_TOUR_CAP) — disponible car déjà fetchée
+        const cap = resultats[c.idx].insee_cap?.total_etab ?? null
+        cap_deja_connues.set(c.code_insee, cap)
       }
 
-      // Fetch RS pour toutes les autres communes de l'EPCI
-      const rs_par_commune = await construireMapRSEPCI(toutes_communes, rs_deja_connues)
+      // Fetch RS + Cap pour toutes les autres communes de l'EPCI (séquentiel, rate limit)
+      const { rs: rs_par_commune, cap: cap_par_commune } = await construireMapsEPCI(toutes_communes, rs_deja_connues, cap_deja_connues)
 
       // Recalcul du prorata hybride pour chaque commune sélectionnée
       for (const c of communesCetEPCI) {
@@ -619,6 +806,7 @@ export async function POST(req: NextRequest) {
           rs_epci,
           toutes_communes,
           rs_par_commune,
+          cap_par_commune,
         )
 
         const montantEstime = Math.round(c.montant_epci * part)

@@ -4,7 +4,8 @@
   "description": "Microservice Node.js — communes CSV + indexation DATA Tourisme",
   "main": "index.ts",
   "scripts": {
-    "dev": "ts-node index.ts"
+    "dev": "ts-node index.ts",
+    "sync-tourinsoft": "ts-node scripts/sync-tourinsoft.ts"
   },
   "dependencies": {
     "csv-parse": "^5.5.6",

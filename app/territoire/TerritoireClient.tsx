@@ -172,6 +172,11 @@ export default function TerritoireClient() {
   const [enAnalyseGPT, setEnAnalyseGPT] = useState(false)
   const [erreurAnalyseGPT, setErreurAnalyseGPT] = useState<string | null>(null)
 
+  // Auto-save Supabase
+  const [saveId, setSaveId] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [saveSuccess, setSaveSuccess] = useState(false)
+
   // ── Validation ────────────────────────────────────────────────────────────
 
   async function validerCommunes() {
@@ -234,6 +239,39 @@ export default function TerritoireClient() {
     }
   }
 
+  // ── Sauvegarde Supabase ───────────────────────────────────────────────────
+
+  async function sauvegarder(data: {
+    communes: object[]
+    resultats: object[]
+    analyse_gpt?: string | null
+  }) {
+    setSaving(true)
+    try {
+      const body: Record<string, unknown> = {
+        communes: data.communes,
+        resultats: data.resultats,
+      }
+      if (saveId) body.id = saveId  // mise à jour si déjà sauvegardé
+      if (data.analyse_gpt !== undefined) body.analyse_gpt = data.analyse_gpt
+
+      const res = await fetch('/api/territoire/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (res.ok) {
+        const d = await res.json()
+        if (d.id) setSaveId(d.id)
+        setSaveSuccess(true)
+      }
+    } catch {
+      // Non bloquant
+    } finally {
+      setSaving(false)
+    }
+  }
+
   // Communes confirmées (ok + ambiguës avec sélection)
   const communesConfirmees = useMemo(() => {
     if (!validation) return []
@@ -255,7 +293,11 @@ export default function TerritoireClient() {
         body: JSON.stringify({ communes: communesConfirmees }),
       })
       const data = await reponse.json()
-      setResultats(data.resultats ?? [])
+      const nouveauxResultats = data.resultats ?? []
+      setResultats(nouveauxResultats)
+
+      // Auto-save après analyse
+      sauvegarder({ communes: communesConfirmees, resultats: nouveauxResultats })
     } catch (err) {
       console.error('Erreur analyse :', err)
     } finally {
@@ -280,6 +322,15 @@ export default function TerritoireClient() {
       const data = await reponse.json()
       if (data.error) throw new Error(data.error)
       setAnalyseGPT(data.analyse)
+
+      // Mise à jour de la sauvegarde avec la synthèse GPT
+      if (resultats) {
+        sauvegarder({
+          communes: communesConfirmees,
+          resultats,
+          analyse_gpt: JSON.stringify(data.analyse),
+        })
+      }
     } catch (err) {
       setErreurAnalyseGPT(err instanceof Error ? err.message : 'Erreur inconnue')
     } finally {
@@ -781,16 +832,30 @@ export default function TerritoireClient() {
                 <span className="text-red-400">{validation.filter((l) => l.statut === 'invalide').length} inconnues</span>
               </div>
 
-              <button
-                onClick={lancerAnalyse}
-                disabled={enAnalyse || communesConfirmees.length === 0}
-                className="px-5 py-2 bg-brand-orange hover:bg-brand-orange/80 disabled:opacity-40 text-white text-sm font-semibold rounded-lg transition-colors"
-              >
-                {enAnalyse
-                  ? 'Analyse en cours...'
-                  : `Analyser ${communesConfirmees.length} commune${communesConfirmees.length > 1 ? 's' : ''}`
-                }
-              </button>
+              <div className="flex items-center gap-3">
+                {saving && (
+                  <span className="flex items-center gap-1 text-xs text-white/40">
+                    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Sauvegarde...
+                  </span>
+                )}
+                {!saving && saveSuccess && (
+                  <span className="text-xs text-green-400">✓ Sauvegardé</span>
+                )}
+                <button
+                  onClick={lancerAnalyse}
+                  disabled={enAnalyse || communesConfirmees.length === 0}
+                  className="px-5 py-2 bg-brand-orange hover:bg-brand-orange/80 disabled:opacity-40 text-white text-sm font-semibold rounded-lg transition-colors"
+                >
+                  {enAnalyse
+                    ? 'Analyse en cours...'
+                    : `Analyser ${communesConfirmees.length} commune${communesConfirmees.length > 1 ? 's' : ''}`
+                  }
+                </button>
+              </div>
             </div>
           </div>
         )}

@@ -71,6 +71,16 @@ export default function Navbar({ userEmail }: NavbarProps) {
         >
           Territoire
         </Link>
+        <Link
+          href="/ecosystem"
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+            pathname?.startsWith('/ecosystem') || pathname?.startsWith('/place') || pathname?.startsWith('/visibility')
+              ? 'bg-white/10 text-white'
+              : 'text-white/50 hover:text-white hover:bg-white/5'
+          }`}
+        >
+          Visibilité digitale
+        </Link>
       </nav>
 
       {/* Spacer */}

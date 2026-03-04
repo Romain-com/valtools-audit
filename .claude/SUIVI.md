@@ -498,10 +498,11 @@ app/api/territoire/analyse-gpt/route.ts → POST — synthèse OpenAI du territo
 - Appels Mélodi RS **séquentiels** dans chaque commune (rate limit ~150 req/min → délai 400ms)
 - GEO format DS_TOUR_CAP : `2025-COM-{code_insee}` | DS_TOUR_FREQ : `2023-DEP-{code}` + valeurs × 1000 (UNIT_MULT=3)
 
-**Prorata taxe EPCI — algorithme hybride**
+**Prorata taxe EPCI — algorithme hybride (v3)**
 - Passe 1 : RS connues → part = RS_commune / RS_EPCI
-- Passe 2 : RS inconnues → part sur montant résiduel pondéré par population
-- Fallback : RS_EPCI absent → population pure
+- Passe 2 : RS inconnues → part sur montant résiduel pondéré par **capacité touristique officielle** (DS_TOUR_CAP `total_etab`) — bien plus pertinent que la population permanente
+- Fallback passe 2 : si aucune donnée DS_TOUR_CAP disponible → population pure
+- Fallback global : RS_EPCI absent → capacité touristique ou population pure
 - `methode_part` retourné dans les résultats : `residences_secondaires | rs_hybride | population`
 
 **Déduplication hébergements** (vue synthèse)
@@ -523,6 +524,360 @@ app/api/territoire/analyse-gpt/route.ts → POST — synthèse OpenAI du territo
 - DS_TOUR_CAP peut retourner 0 observations pour les petites communes → fallback `null`
 - MAX_COMMUNES_INCONNUES = 40 (plafond anti-timeout pour le prorata hybride EPCI)
 - Limite : 50 communes par requête
+- `fetchResidencesSecondaires` retourne `null` si Mélodi n'a pas de données (distinct de "0 RS")
+- RS EPCI pré-chargé avant le `Promise.all` principal (1 seul appel par EPCI unique, séquentiel)
+
+---
+
+## Correctifs Territoire — Prorata EPCI (2026-03-04)
+
+### Bug 1 — Race condition RS EPCI (symptôme : Pontcharra orange alors que RS connue)
+
+**Cause** : `fetchResidencesSecondairesEPCI` était appelée dans `analyserCommune()` via `Promise.all`. Pour 4 communes du même EPCI (ex. CC LE GRESIVAUDAN), l'API Mélodi recevait 4 appels simultanés sur le même SIREN → rate limit → certaines communes (dont Pontcharra) recevaient `null` → fallback population.
+
+**Correction** :
+- `fetchEpci` et `fetchResidencesSecondairesEPCI` déplacés **avant** le `Promise.all` principal
+- Une seule requête par EPCI unique, séquentielle (boucle `for...of`)
+- Résultat : `epciParCommune: Map<code_insee, InfosEpci>` + `rsEpciMap: Map<siren_epci, number | null>`
+- Ces maps sont passées en paramètre à `analyserCommune` (plus de re-fetch interne)
+- Enrichissement hybride réutilise `rsEpciMap` (pas de 3e appel API)
+
+### Bug 2 — `fetchResidencesSecondaires` retournait 0 pour "données absentes"
+
+**Cause** : si Mélodi retourne `observations: []`, la fonction calculait `Math.round(undefined ?? 0) = 0` et retournait `0`. Résultat : "0 RS" et "données absentes" étaient indistinguables dans `calculerPartHybride`.
+
+**Correction** : ajout `if (obs.length === 0) return null` avant le calcul.
+
+### Amélioration — Passe 2 hybride : capacité touristique au lieu de population
+
+**Problème** : distribuer le montant résiduel (communes sans RS) par population permanente est un mauvais proxy touristique. Un bourg de 10 000 hab. sans hôtel recevait plus qu'une station de ski de 800 hab. avec 30 chalets.
+
+**Solution** : en passe 2, utiliser `total_etab` (DS_TOUR_CAP Mélodi) comme poids.
+- `construireMapsEPCI` remplace `construireMapRSEPCI` : fetch RS **et** Cap par commune inconnue (séquentiel, 400ms entre appels, 2 appels par commune)
+- `calculerPartHybride` reçoit `cap_par_commune: Map<string, number | null>` en plus
+- Passe 2 : `part = résidu × (cap_commune / cap_total_sans_rs)` si cap disponible, sinon population
+- Communes avec 0 établissements touristiques → 0€ du résiduel (correct)
+
+---
+
+## Intégration Tourinsoft ANMSM (2026-03-04)
+
+### Objectif
+
+Connecter les 5 flux de données ANMSM (stations de montagne) pour enrichir l'onglet Territoire avec des données stations, hébergements, activités et commerces propres au périmètre des stations affiliées.
+
+### Analyse préalable des flux
+
+| Feed | Items réels | Taille XML | Cache JSON | Stratégie |
+|------|-------------|------------|------------|-----------|
+| Données Stations | 93 | 22 MB | 287 KB | Sync + mémoire |
+| Séjours | 43 | 1 MB | 56 KB | Sync + mémoire |
+| Hébergements | 15 321 | 627 MB | 3.0 MB | Sync + mémoire |
+| Activités | 8 148 | ~80 MB | 1.8 MB | Sync + mémoire |
+| Commerces | 1 856 | 65 MB | 356 KB | Sync + mémoire |
+
+**Total** : ~750 MB XML → 5.5 MB JSON compact (facteur compression ×136)
+
+**Contraintes découvertes** : pas de filtres serveur (`$filter`/`$top` ignorés), format XML Atom OData v3, pas de code INSEE (CODEPOSTAL uniquement), périmètre limité aux communes affiliées ANMSM.
+
+### Architecture retenue : pré-indexation + microservice
+
+```
+Script sync → XML brut (750 MB total) → JSON compact (5-10 MB total)
+Microservice → charge JSON au démarrage → index Map<code_postal, items[]>
+Route territoire → fetchTourinsoft(code_postal) → champ tourinsoft dans ResultatCommune
+```
+
+### Fichiers créés
+
+| Fichier | Rôle |
+|---------|------|
+| `microservice/scripts/sync-tourinsoft.ts` | Télécharge et parse les 5 flux XML → JSON compacts dans `cache/tourinsoft/` |
+| `microservice/services/tourinsoft.ts` | Charge les JSON en RAM, indexe par code_postal, expose les fonctions getXxxParCp() |
+| `microservice/routes/tourinsoft.ts` | Endpoints Express : /tourinsoft/resume, /station, /hebergements, /activites, /commerces |
+
+### Fichiers modifiés
+
+| Fichier | Modification |
+|---------|-------------|
+| `microservice/index.ts` | Import + route `/tourinsoft` + `chargerTourinsoft()` au démarrage |
+| `microservice/package.json` | Script `sync-tourinsoft` ajouté |
+| `app/api/territoire/analyser/route.ts` | `fetchTourinsoft(code_postal)` en parallèle des stocks DATA Tourisme, champ `tourinsoft` dans `ResultatCommune` |
+
+### Mise en service
+
+```bash
+# 1. Lancer la sync une première fois (~5-15 min)
+cd microservice && npm run sync-tourinsoft
+
+# 2. Redémarrer le microservice
+npm run dev
+```
+
+### Comportement runtime
+
+- `tourinsoft: null` → commune hors périmètre ANMSM (pas une station affiliée)
+- `tourinsoft.station: null` → commune dans un code postal sans station enregistrée
+- Erreur microservice → `null` silencieux (pas bloquant pour l'analyse)
+
+---
+
+## Onglet Visibilité digitale — Vue 1 : Écosystème digital (2026-03-04)
+
+### Objectif
+
+Nouvel onglet dans la navbar (`/ecosystem`) permettant de cartographier l'écosystème digital d'une destination touristique en 3 étapes : détection automatique des acteurs officiels via Google, validation/édition de la liste, enrichissement SEO avec métriques de visibilité.
+
+### Fichiers créés
+
+```
+types/ecosystem.ts                                  → DetectedSite, ClassifiedSite, EnrichedSite, HaloscanData
+lib/scores.ts                                       → computeAuthorityScore (60% position + 40% trafic log)
+lib/formatters.ts                                   → formatTraffic, formatPosition
+
+app/api/ecosystem/serp/route.ts                     → DataForSEO SERP live/advanced depth:20
+app/api/ecosystem/classify/route.ts                 → OpenAI gpt-5-mini + fallback regex
+app/api/ecosystem/enrich/route.ts                   → Haloscan bulk
+app/api/ecosystem/save/route.ts                     → Supabase INSERT ecosystem_analyses
+app/api/ecosystem/history/route.ts                  → Supabase GET (20 dernières) + DELETE
+
+components/ecosystem/EcosystemView.tsx              → Orchestrateur 3 étapes + historique + auto-save
+components/ecosystem/StepDetection.tsx              → Formulaire + états loading animés
+components/ecosystem/StepValidation.tsx             → Liste éditable + ajout manuel de domaines
+components/ecosystem/StepResults.tsx                → Tableau trié + phrase de synthèse
+components/ecosystem/SiteCard.tsx                   → Carte individuelle (select catégorie + suppression)
+components/ecosystem/AuthorityBar.tsx               → Barre de progression 0–100 colorée
+
+app/ecosystem/page.tsx                              → Server Component auth guard
+
+supabase/migrations/006_ecosystem_analyses.sql      → Table + index + RLS
+components/layout/Navbar.tsx                        → Ajout lien "Visibilité digitale" → /ecosystem
+```
+
+### Décisions techniques notables
+
+**DataForSEO SERP — capture Local Pack**
+- Initialement, seuls les `organic` items étaient capturés → la mairie/OT absents de la SERP organique (ex : `alpedhuez-mairie.fr`) n'étaient pas détectés
+- Correction : capturer aussi les items `type === 'local_pack'` et leurs sous-items (domain, url, title, address)
+- Sites du Local Pack ont `serpPosition: null` → authorityScore calculé sur trafic uniquement
+
+**Classification OpenAI → Chat Completions (pas Responses API)**
+- La Responses API (`POST /v1/responses`) ne supporte pas `response_format: { type: "json_object" }`
+- Pour la classification, on reste sur `POST /v1/chat/completions` avec `response_format: { type: "json_object" }` pour obtenir du JSON garanti
+- Modèle : `gpt-5-mini` dans les deux cas
+
+**Haloscan bulk**
+- Endpoint `/api/domains/bulk` (pas `/api/domains/overview` qui ne traite qu'un domaine à la fois)
+- Les domaines absents de la réponse → `haloscanFound: false`, métriques `null`
+- Fallback gracieux total : si Haloscan échoue, tous les domaines reviennent avec `haloscanFound: false`
+
+**Sauvegarde non bloquante**
+- Le `fetch('/api/ecosystem/save')` est fire-and-forget (pas de `await`)
+- L'utilisateur voit les résultats immédiatement ; le badge "Sauvegardé" apparaît 1–2s après
+
+**Historique panneau latéral**
+- Affiché uniquement à l'étape 1 (formulaire) — pas de distraction pendant les étapes 2/3
+- Clic → saute directement à l'étape Résultats sans refaire l'analyse (économie API)
+
+### Coûts estimés par analyse
+
+| API | Coût | Nb appels |
+|-----|------|-----------|
+| DataForSEO SERP | ~0.003 $ | 1 |
+| OpenAI gpt-5-mini | ~0.0015 $ | 1 |
+| Haloscan bulk | ~1 crédit / site indexé trouvé | 1 |
+
+### Migration à appliquer
+
+```sql
+-- supabase/migrations/006_ecosystem_analyses.sql
+-- Appliquer via Supabase Dashboard → SQL Editor ou supabase db push
+```
+
+---
+
+## Vue 3 — Analyse d'un lieu touristique (2026-03-04)
+
+### Objectif
+
+Deuxième outil dans la section "Visibilité digitale". L'utilisateur saisit le nom d'un lieu touristique et sa commune. L'outil analyse sa présence digitale (site, GMB, SERP) et la compare à celle de la commune.
+
+### Fichiers créés
+
+```
+types/place.ts                                    → CommuneDetection, PlaceSerpResult, PlaceGMB,
+                                                     CommuneSerpResult, PlaceHaloscanData, PlaceDiagnostic, PlaceData
+
+app/api/place/serp-place/route.ts                 → DataForSEO SERP organic + Maps + classification GPT acteurs
+app/api/place/serp-commune/route.ts               → DataForSEO SERP commune + détection mentionsPlace
+app/api/place/ranked-place/route.ts               → Haloscan bulk lieu + commune (1 appel)
+app/api/place/diagnostic-insights/route.ts        → OpenAI headline + recommandations
+app/api/place/detect-commune/route.ts             → (non utilisé — IA détectait la commune, abandonné)
+
+app/place/page.tsx                                → Server Component auth guard → PlaceView
+
+components/place/PlaceView.tsx                    → Orchestrateur — 2 champs → analyse → résultats
+components/place/StepInput.tsx                    → Formulaire : nom du lieu + commune + Lancer
+components/place/StepResults.tsx                  → Résultats scrollables (4 sections)
+components/place/DiagnosticBanner.tsx             → Headline GPT + badges + recommandations
+components/place/SectionExistence.tsx             → SERP lieu + fiche GMB côte à côte
+components/place/SectionCommuneContent.tsx        → SERP commune + surlignage des mentions
+components/place/SectionComparison.tsx            → Tableau comparatif Haloscan + phrase de contexte
+
+components/layout/VisibiliteTabNav.tsx            → Sous-navigation partagée Écosystème / Lieu touristique
+```
+
+### Fichiers modifiés
+
+```
+components/layout/Navbar.tsx         → "Visibilité digitale" actif sur /ecosystem ET /place
+app/ecosystem/page.tsx               → Ajout VisibiliteTabNav
+app/place/page.tsx                   → Ajout VisibiliteTabNav
+components/ecosystem/EcosystemView.tsx → sticky top-28 (navbar + tab nav)
+app/api/ecosystem/classify/route.ts  → max_completion_tokens, sans temperature, sans response_format
+```
+
+### Décisions techniques
+
+**Saisie manuelle de la commune**
+- Premier design : GPT détectait la commune depuis le nom du lieu → retournait `content: ""` avec `gpt-5-mini`
+- Décision : saisie manuelle — formulaire avec 2 champs. Plus fiable, plus rapide.
+- La route `detect-commune` est conservée dans le code mais n'est pas appelée.
+
+**Contraintes gpt-5-mini (découvertes en prod)**
+- `max_tokens` → remplacer par `max_completion_tokens`
+- `temperature: 0.2` → non supporté, supprimer le paramètre
+- `response_format: { type: 'json_object' }` → retourne `content: ""`, ne pas utiliser
+- Correction appliquée à TOUTES les routes OpenAI du projet (ecosystem/classify + toutes les routes place)
+
+**Haloscan bulk optimisé**
+- Un seul appel pour le lieu ET la commune (si deux domaines différents)
+- Domaines détectés depuis les SERP results : `LIEU_OFFICIEL` → placeDomain, `COMMUNE_OT` → communeDomain
+
+**Navigation Visibilité digitale**
+- Navbar : lien unique "Visibilité digitale" → `/ecosystem`
+- `VisibiliteTabNav` : composant `'use client'` réutilisé sur les deux pages
+- Détection de la page active via `usePathname()`
+
+### Coûts estimés par analyse complète
+
+| API | Coût | Appels |
+|-----|------|--------|
+| DataForSEO SERP x2 | ~0.006 $ | 2 |
+| DataForSEO Maps | ~0.003 $ | 1 |
+| OpenAI classification | ~0.001 $ | 1 |
+| Haloscan bulk | 1-2 crédits | 1 |
+| OpenAI diagnostic | ~0.001 $ | 1 |
+
+---
+
+## Vue 2 — Score de visibilité — Présence commerciale SERP (2026-03-04)
+
+### Objectif
+
+Enrichir la Vue Score de visibilité avec la détection des acteurs qui capturent du trafic commercial via Google Ads, Google Hotels Pack et les sites OTA mis en avant (compare_sites), sur le SERP principal + les 7 SERPs commerciales.
+
+### Problème initial — endpoint inexistant
+
+Tentative d'utiliser `/serp/google/paid/live/advanced` → **erreur 40402 Invalid Path**. Cet endpoint n'existe pas dans l'API DataForSEO. Validation via script direct `test-paid-serp.js`.
+
+**Solution** : les items payants (`paid`, `hotels_pack`, `compare_sites`) sont inclus dans la réponse de l'endpoint organique standard.
+
+### Problème secondaire — paid items vides
+
+Pour "hébergement les 7 laux", DataForSEO ne retourne pas d'items `paid` : les 4 annonces visibles dans le navigateur sont **géo-personnalisées** — DataForSEO crawle depuis des serveurs neutres qui ne les reçoivent pas.
+
+**Solution** : étendre la détection aux 3 types de blocs commerciaux :
+- `paid` → annonces Google Ads (si présentes)
+- `hotels_pack` → Google Hotels Pack (agrégateurs hébergements)
+- `compare_sites` → sites OTA mis en avant (Airbnb, Ski Planet, Booking…)
+
+### Fichiers modifiés
+
+| Fichier | Modification |
+|---------|-------------|
+| `types/visibility.ts` | Ajout `HotelsPackItem`, `CompareSiteItem`, `SerpCommercialPresence` ; mise à jour `PaidAdByQuery` (`.ads` → `.presence`) ; ajout `hotelsPackMain`, `compareSitesMain` dans `VisibilityData` |
+| `app/api/visibility/serp-main/route.ts` | Extraction `hotels_pack` + `compare_sites` depuis la réponse organique ; retour `hotelsPackMain`, `compareSitesMain` |
+| `app/api/visibility/serp-commercial/route.ts` | Extraction `paid` + `hotels_pack` + `compare_sites` par requête → `SerpCommercialPresence` par query |
+| `components/visibility/VisibilityView.tsx` | Propagation `hotelsPackMain`, `compareSitesMain` vers `SectionNominal` |
+| `components/visibility/SectionNominal.tsx` | Remplacement du bloc "pub" par section unifiée "Présence commerciale" (amber/sky/violet) — s'affiche si au moins 1 type est présent |
+| `components/visibility/SectionCommercial.tsx` | Remplacement `PaidAdsBlock` par `CommercialPresenceBlock` + `PresenceItem` — affiche paid/hotels/compare par requête |
+
+### Règles d'affichage
+
+- Le bloc "Présence commerciale" ne s'affiche que si au moins un des 3 types est non vide
+- `hotels_pack.items` peuvent avoir `domain: null` et `url: null` → affichage texte-only
+- `compare_sites.items` ont toujours `domain` et `url` → affichage avec lien cliquable
+- Couleurs : Ads = amber, Hotels = sky, Compare sites = violet
+
+---
+
+## Correctifs Vue Score de visibilité (2026-03-04 — session 2)
+
+### 1. Tourinsoft — priorité sur DATA Tourisme dans l'onglet Territoire
+
+**Problème** : impossible de dédoublonner les données Tourinsoft et DATA Tourisme de manière fiable (pas de pivot commun entre les IDs SITRA2_XXX / 38AAHEB et les `dc:identifier` DATA Tourisme — ~10% de correspondance seulement).
+
+**Décision** : si Tourinsoft retourne des données pour le code postal → les utiliser directement. Sinon → fallback DATA Tourisme.
+
+**Implémentation** (`app/api/territoire/analyser/route.ts`) :
+- Ajout de `tourinsofrVersEtablissements()` : convertit les items Tourinsoft en `Etablissement[]` (hebergements + poi = activites + commerces)
+- Logique de priorité : `const { hebergements, poi } = tourinsoft ? tourinsofrVersEtablissements(tourinsoft) : stocks`
+- Catégories : hébergements → `'hebergements'`, activités → `'activites'`, commerces → `'services'`
+- ⚠️ Littéraux string doivent être castés `as const` pour satisfaire le type union
+
+### 2. ETV calculé côté serveur pour ranked_keywords
+
+**Problème** : DataForSEO Labs `ranked_keywords/live` ne retourne PAS de champ `etv` dans les items (uniquement `se_type`, `keyword_data`, `ranked_serp_element`).
+
+**Solution** (`app/api/visibility/ranked/route.ts`) : ETV calculé via CTR × volume.
+
+CTR par position (benchmarks Sistrix/AWR) :
+```
+pos1=28%, pos2=15%, pos3=11%, pos4=8%, pos5=7%
+pos6=5%, pos7=4%, pos8=3%, pos9=3%, pos10=2%
+pos11-20=1%, pos21+=0.5%
+```
+
+`etv: Math.round(searchVolume * ctrParPosition(position))`
+
+Champ `etv: number` ajouté au type `RankedKeyword` dans `types/visibility.ts`.
+
+### 3. Section sémantique — colonne droite refactorisée
+
+**Avant** : colonne droite = "Positionnés TOP10" (liste statique des mots-clés en pos ≤ 10).
+
+**Après** : colonne droite = "Top 20 mots-clés — page la plus trafiquée".
+- Sélection de l'URL principale = celle qui cumule le plus d'ETV parmi tous les mots-clés positionnés
+- Top 20 mots-clés de cette URL, triés par ETV décroissant
+- Affichage : mot-clé + position + trafic estimé
+
+### 4. Normalisation mots-clés — fix opportunités manquées
+
+**Problème** : "station alpe d'huez" (apostrophe typographique de DataForSEO) n'était pas matché avec "alpe d'huez" (ASCII) du corpus de marché.
+
+**Solution** (`components/visibility/SectionSemantic.tsx`) : fonction `norm()` appliquée aux deux ensembles avant comparaison :
+```ts
+function norm(s: string): string {
+  return s.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')  // supprime accents
+    .replace(/[''`]/g, ' ')                              // apostrophes → espace
+    .replace(/\s+/g, ' ').trim()
+}
+```
+
+**Colonne gauche** : mots-clés du marché (related keywords) **absents** de TOUS les mots-clés positionnés du domaine (toutes URLs), triés par volume décroissant, top 20.
+
+### 5. Historique visibilité — bouton "Consulter"
+
+**Problème** : le panneau historique permettait uniquement de sélectionner une analyse pour comparaison — impossible de la rouvrir directement.
+
+**Solution** (`components/visibility/VisibilityView.tsx`) :
+- `loadingId: string | null` : état de chargement
+- `loadAnalysis(id)` : `GET /api/visibility/analysis/${id}` → récupère `resultats` JSONB → `setData(analysis.resultats)` → ferme le panneau historique
+- Bouton œil (👁) ajouté à côté de chaque entrée dans `HistoryPanel` — distinct du bouton de comparaison
+- Props ajoutées : `onLoad: (id) => void` + `loadingId: string | null`
+- Route Supabase utilisée : `app/api/visibility/analysis/[id]/route.ts` (déjà existante)
 
 ---
 
