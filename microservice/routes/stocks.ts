@@ -266,6 +266,18 @@ router.get('/', async (req: Request, res: Response) => {
       const { adresse, code_postal } = extraireAdresse(data)
       const { lat, lng } = extraireGPS(data)
 
+      // Capacité hébergement — DATA Tourisme : hasAccommodationCapacity[0]
+      let capacite: number | null = null
+      if (categorie === 'hebergements') {
+        const capRaw = (data as Record<string, unknown>)['hasAccommodationCapacity']
+        if (Array.isArray(capRaw) && capRaw.length > 0) {
+          const capObj = capRaw[0] as Record<string, unknown>
+          const valeur = capObj['schema:numberOfRooms'] ?? capObj['numberOfUnits'] ?? null
+          if (typeof valeur === 'number') capacite = valeur
+          else if (typeof valeur === 'string') capacite = parseInt(valeur, 10) || null
+        }
+      }
+
       etablissements_bruts.push({
         uuid,
         nom,
@@ -276,6 +288,7 @@ router.get('/', async (req: Request, res: Response) => {
         code_postal,
         lat,
         lng,
+        capacite,
       })
     } catch {
       // Fichier corrompu ou structure inattendue — on ignore

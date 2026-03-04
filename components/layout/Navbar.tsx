@@ -1,6 +1,7 @@
 'use client'
-// Navbar globale — logo Valraiso officiel + utilisateur connecté + déconnexion
-import { useRouter } from 'next/navigation'
+// Navbar globale — logo Valraiso officiel + navigation + utilisateur connecté + déconnexion
+import Link from 'next/link'
+import { useRouter, usePathname } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 
 interface NavbarProps {
@@ -9,6 +10,7 @@ interface NavbarProps {
 
 export default function Navbar({ userEmail }: NavbarProps) {
   const router = useRouter()
+  const pathname = usePathname()
   const supabase = createClient()
 
   async function handleSignOut() {
@@ -46,6 +48,30 @@ export default function Navbar({ userEmail }: NavbarProps) {
 
         <span className="text-white/30 text-sm font-normal hidden sm:inline">/ Audit Digital</span>
       </a>
+
+      {/* Navigation principale */}
+      <nav className="flex items-center gap-1 ml-4">
+        <Link
+          href="/dashboard"
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+            pathname?.startsWith('/dashboard') || pathname?.startsWith('/audit')
+              ? 'bg-white/10 text-white'
+              : 'text-white/50 hover:text-white hover:bg-white/5'
+          }`}
+        >
+          Audits
+        </Link>
+        <Link
+          href="/territoire"
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+            pathname?.startsWith('/territoire')
+              ? 'bg-white/10 text-white'
+              : 'text-white/50 hover:text-white hover:bg-white/5'
+          }`}
+        >
+          Territoire
+        </Link>
+      </nav>
 
       {/* Spacer */}
       <div className="flex-1" />
