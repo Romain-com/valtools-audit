@@ -16,6 +16,7 @@
 | Apify instagram-hashtag-scraper | ✅ Token | Posts individuels (likes, username) |
 | Monitorank | ⚠️ Token | Algo updates Google seulement |
 | Haloscan | ✅ Header | SEO keywords/trafic (pas backlinks) |
+| Tourinsoft ANMSM | ✅ Sans clé (UUID) | Stations montagne, hébergements, activités, commerces, séjours |
 | RapidAPI Instagram | ⚠️ Header | Abonné mais endpoints hashtag inaccessibles |
 | Apify Google Maps | ❌ Trop lent | Remplacé par DataForSEO Maps |
 
@@ -545,5 +546,66 @@ node test-apis.js
 6. **Code INSEE / population** → data.gouv.fr Géo API (gratuit)
 7. **SEO keywords domaine** → Haloscan (1 crédit/domaine, fallback si SITE_NOT_FOUND)
 8. **Algo Google récent** → Monitorank (module=google&action=update)
-9. **Backlinks** → ❌ Aucune API disponible dans le stack actuel
-   (Haloscan = SEO only, pas de backlinks)
+9. **Stations de montagne / stocks ANMSM** → Tourinsoft ANMSM (pré-indexé en local)
+10. **Backlinks** → ❌ Aucune API disponible dans le stack actuel
+    (Haloscan = SEO only, pas de backlinks)
+
+---
+
+## Tourinsoft ANMSM — V3
+
+**Périmètre** : données des stations de montagne affiliées ANMSM (Association Nationale des Maires des Stations de Montagne).
+
+**Authentification** : aucune — accès via UUID dans l'URL (syndications publiques).
+
+**Format de réponse** : XML Atom OData v3 (pas de JSON, pas de filtres serveur `$filter`/`$top`).
+
+### Flux disponibles
+
+| Feed | UUID | Items | Taille XML | Fréquence recommandée |
+|------|------|-------|------------|-----------------------|
+| Données Stations | A676A2F1-... | 93 | 22 MB | Mensuelle |
+| Séjours | 6A799016-... | 43 | 1 MB | Mensuelle |
+| Hébergements | D2075BFB-... | 15 526 | **627 MB** | Mensuelle |
+| Activités | EBD5CD64-... | 8 404 | ~80 MB | Mensuelle |
+| Commerces | 349346F2-... | 3 249 | 65 MB | Mensuelle |
+
+### Champs clés par feed
+
+**Tous les feeds** : `SyndicObjectID`, `SyndicObjectName`, `GmapLatitude`, `GmapLongitude`, `COMMUNE`, `CODEPOSTAL`, `STATION` (lien vers id station)
+
+**Données Stations** uniquement : `NOMSTATION`, `ALTBAS`, `ALTHAUT`, `VTT`, `NOMOT`, `ADRESSEOT`, `CPOT`, `ACCROCHE`, `DESCHIVERFR`, `DESCETEFR`, `DESCACTFR`, `DESCACTHIVERFR`, `DESCHEBFR`
+
+**Hébergements** uniquement : `HEBTOTAL` (total lits/places), `ObjectTypeName` (type d'hébergement), `SOCIETE`
+
+**Commerces** : `IDCOMMUNE` (au lieu de `COMMUNE`)
+
+### Contraintes critiques
+
+- ⚠️ **Aucun filtre serveur** — `$filter`, `$top` ignorés → téléchargement complet obligatoire
+- ⚠️ **Hébergements 627 MB** → ne jamais fetcher à la volée — pré-indexer via `sync-tourinsoft.ts`
+- ⚠️ **Pas de code INSEE** — filtrage par `CODEPOSTAL` uniquement (pas `code_insee`)
+- ⚠️ **Périmètre ANMSM seulement** — communes hors stations affiliées retournent 0 résultat
+
+### Architecture d'intégration
+
+```
+1. Script ponctuel (mensuel) :
+   cd microservice && npm run sync-tourinsoft
+   → télécharge XML → parse → écrit JSON compacts dans cache/tourinsoft/
+   → stations.json (93 items), hebergements.json, activites.json, commerces.json, sejours.json
+
+2. Microservice (au démarrage) :
+   chargerTourinsoft() → charge JSON → index Map<code_postal, items[]> en RAM
+   → 5 endpoints disponibles : GET /tourinsoft/resume|station|hebergements|activites|commerces
+
+3. Route territoire (/api/territoire/analyser) :
+   fetchTourinsoft(code_postal) → champ tourinsoft dans ResultatCommune
+   → null si commune hors périmètre ANMSM
+```
+
+### Lien entre feeds
+
+`Hébergements.STATION` = `Données Stations.SyndicObjectID` = code station (ex: `STATANMSM01730002`)
+
+Permet de retrouver toutes les offres d'une station à partir de son code.
