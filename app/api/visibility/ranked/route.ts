@@ -1,15 +1,43 @@
 // Route Handler — Mots-clés positionnés du domaine de référence
-// DataForSEO Labs ranked_keywords — retourne jusqu'à 1000 mots-clés organiques
+// Haloscan domains/positions — pagine pour récupérer TOUS les mots-clés du domaine
 
 import { NextRequest, NextResponse } from 'next/server'
 import axios from 'axios'
 import type { RankedKeyword } from '@/types/visibility'
 
-const DATAFORSEO_LOGIN = process.env.DATAFORSEO_LOGIN!
-const DATAFORSEO_PASSWORD = process.env.DATAFORSEO_PASSWORD!
+const HALOSCAN_API_KEY = process.env.HALOSCAN_API_KEY!
+const PAGE_SIZE = 500
+const MAX_PAGES = 60 // max 30 000 mots-clés
 
-function getAuth(): string {
-  return Buffer.from(`${DATAFORSEO_LOGIN}:${DATAFORSEO_PASSWORD}`).toString('base64')
+async function fetchPage(input: string, page: number): Promise<{ results: unknown[]; totalKeywords: number }> {
+  const response = await axios.post(
+    'https://api.haloscan.com/api/domains/positions',
+    {
+      input,
+      mode: 'root',
+      lineCount: PAGE_SIZE,
+      page,
+      order_by: 'traffic',
+      order: 'desc',
+    },
+    {
+      headers: {
+        'haloscan-api-key': HALOSCAN_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      timeout: 30_000,
+    }
+  )
+
+  // Fallback si domaine non indexé
+  if (response.data?.failure_reason || response.data?.response_code === 'SITE_NOT_FOUND') {
+    return { results: [], totalKeywords: 0 }
+  }
+
+  return {
+    results: response.data?.results ?? [],
+    totalKeywords: response.data?.total_keyword_count ?? 0,
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -20,60 +48,30 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'domain est requis' }, { status: 400 })
     }
 
-    const response = await axios.post(
-      'https://api.dataforseo.com/v3/dataforseo_labs/google/ranked_keywords/live',
-      [
-        {
-          target: domain.replace('www.', ''),
-          language_code: 'fr',
-          location_code: 2250,
-          limit: 1000,
-          item_types: ['organic'],
-        },
-      ],
-      {
-        headers: {
-          Authorization: `Basic ${getAuth()}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 60_000,
-      }
-    )
+    const input = domain.replace(/^https?:\/\/(www\.)?/, '').split('/')[0]
+    const allItems: unknown[] = []
+    let page = 1
 
-    const items: unknown[] = response.data?.tasks?.[0]?.result?.[0]?.items ?? []
-
-    // CTR moyen par position (source : Sistrix / AWR industry benchmarks)
-    const CTR: Record<number, number> = {
-      1: 0.28, 2: 0.15, 3: 0.11, 4: 0.08, 5: 0.07,
-      6: 0.05, 7: 0.04, 8: 0.03, 9: 0.03, 10: 0.02,
-    }
-    function ctrParPosition(pos: number): number {
-      if (pos <= 0) return 0
-      if (pos <= 10) return CTR[pos] ?? 0.02
-      if (pos <= 20) return 0.01
-      return 0.005
+    while (page <= MAX_PAGES) {
+      const { results, totalKeywords } = await fetchPage(input, page)
+      allItems.push(...results)
+      // Arrêt si on a tout récupéré ou si la page est incomplète
+      if (results.length < PAGE_SIZE || allItems.length >= totalKeywords) break
+      page++
     }
 
-    // ⚠️ Le volume est sous keyword_data.keyword_info.search_volume (pas keyword_data.search_volume)
-    // ⚠️ DataForSEO ne retourne pas etv pour cet endpoint — calculé via CTR × volume
-    const rankedKeywords: RankedKeyword[] = items.map((item: unknown) => {
-      const it = item as {
-        keyword_data?: {
-          keyword?: string
-          keyword_info?: { search_volume?: number }
-        }
-        ranked_serp_element?: { serp_item?: { rank_absolute?: number; url?: string } }
-      }
-      const position = it.ranked_serp_element?.serp_item?.rank_absolute ?? 0
-      const searchVolume = it.keyword_data?.keyword_info?.search_volume ?? 0
-      return {
-        keyword: it.keyword_data?.keyword ?? '',
-        position,
-        searchVolume,
-        etv: Math.round(searchVolume * ctrParPosition(position)),
-        url: it.ranked_serp_element?.serp_item?.url ?? '',
-      }
-    })
+    // ⚠️ Haloscan retourne traffic (ETV direct) et volume séparément
+    // traffic = trafic estimé mensuel, volume = volume de recherche du mot-clé
+    const rankedKeywords: RankedKeyword[] = allItems
+      .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
+      .map((item) => ({
+        keyword: String(item.keyword ?? ''),
+        position: (item.position && item.position !== 'NA') ? Number(item.position) : 0,
+        searchVolume: (item.volume && item.volume !== 'NA') ? Number(item.volume) : 0,
+        etv: (item.traffic && item.traffic !== 'NA') ? Math.round(Number(item.traffic)) : 0,
+        url: String(item.url ?? ''),
+      }))
+      .filter((rk) => rk.keyword !== '')
 
     return NextResponse.json({ rankedKeywords })
   } catch (err: unknown) {

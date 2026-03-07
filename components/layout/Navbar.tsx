@@ -86,6 +86,9 @@ export default function Navbar({ userEmail }: NavbarProps) {
       {/* Spacer */}
       <div className="flex-1" />
 
+      {/* Message de bienvenue */}
+      <span className="text-white/40 text-sm hidden md:inline">Bonjour, maitre codeur !</span>
+
       {/* Utilisateur connecté */}
       {userEmail && (
         <div className="flex items-center gap-3">

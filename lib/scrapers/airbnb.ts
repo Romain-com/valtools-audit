@@ -1,50 +1,10 @@
 // Scraper — Airbnb
 // Compte les annonces hébergement actives sur Airbnb pour une commune
-// Stratégie : découpage récursif en quadrants géographiques si le compteur dépasse SEUIL_MAX
-// Source bbox : GET /bbox du microservice local
+// Stratégie : simulation de l'interaction utilisateur (saisie + autocomplete)
+// → seule approche fiable pour obtenir les résultats ancrés à la commune
 
 import type { Browser, Page } from 'playwright'
-import type { ResultatAirbnb, BoundingBox } from '@/types/stock-en-ligne'
-
-const SEUIL_MAX      = 1000   // Au-dessus : découper en 4 quadrants
-const PROFONDEUR_MAX = 6      // Profondeur max de récursion
-const DELAI_MS       = 1800   // Délai entre requêtes (anti-détection)
-
-/**
- * Construit l'URL Airbnb avec les paramètres de bounding box
- */
-function buildUrlAirbnb(zone: BoundingBox, destination: string): string {
-  const params = new URLSearchParams({
-    refinement_paths: '/homes',
-    query: destination.toLowerCase(),
-    search_mode: 'regular_search',
-    price_filter_input_type: '2',
-    channel: 'EXPLORE',
-    ne_lat: zone.ne_lat.toString(),
-    ne_lng: zone.ne_lng.toString(),
-    sw_lat: zone.sw_lat.toString(),
-    sw_lng: zone.sw_lng.toString(),
-    zoom: '13',
-    search_by_map: 'true',
-    search_type: 'user_map_move',
-  })
-  return `https://www.airbnb.fr/s/${encodeURIComponent(destination)}/homes?${params}`
-}
-
-/**
- * Construit l'URL Airbnb sans coordonnées géographiques (fallback si bbox indisponible)
- * Moins précis — cherche par nom de ville uniquement
- */
-function buildUrlAirbnbSansGeo(destination: string): string {
-  const params = new URLSearchParams({
-    refinement_paths: '/homes',
-    query: destination.toLowerCase(),
-    search_mode: 'regular_search',
-    price_filter_input_type: '2',
-    channel: 'EXPLORE',
-  })
-  return `https://www.airbnb.fr/s/${encodeURIComponent(destination)}/homes?${params}`
-}
+import type { ResultatAirbnb } from '@/types/stock-en-ligne'
 
 /**
  * Parse un texte et extrait un nombre (ex: "1 234 logements" → 1234)
@@ -77,11 +37,6 @@ async function extraireNombreAirbnb(page: Page): Promise<number> {
       const el = await page.$(sel)
       if (el) {
         const texte = await el.textContent()
-        // Si le texte contient "+" (ex: "1 000+") → dépasse SEUIL_MAX → forcer subdivision
-        if (texte && texte.includes('+')) {
-          console.log(`[Airbnb] CSS (${sel}) → texte avec "+" détecté → forcer découpage`)
-          return SEUIL_MAX + 1
-        }
         const n = parseNombreAirbnb(texte)
         if (n !== null && n >= 0) {
           console.log(`[Airbnb] Stratégie CSS (${sel}) → ${n}`)
@@ -121,10 +76,8 @@ async function extraireNombreAirbnb(page: Page): Promise<number> {
   try {
     const cartes = await page.$$('[data-testid="card-container"]')
     if (cartes.length > 0) {
-      // Si 18+ cartes → probablement > SEUIL_MAX (Airbnb pagine à 18/20)
-      const estimé = cartes.length >= 18 ? 1001 : cartes.length
-      console.log(`[Airbnb] Stratégie comptage cartes → ${cartes.length} cartes → estimé ${estimé}`)
-      return estimé
+      console.log(`[Airbnb] Stratégie comptage cartes → ${cartes.length}`)
+      return cartes.length
     }
   } catch {
     // Ignorer
@@ -135,80 +88,164 @@ async function extraireNombreAirbnb(page: Page): Promise<number> {
 }
 
 /**
- * Découpe une zone en 4 quadrants géographiques
+ * Simule une recherche utilisateur sur Airbnb :
+ * saisit le nom de la destination, sélectionne la première suggestion autocomplete,
+ * puis lit le nombre d'annonces affiché.
+ * C'est la seule approche qui retourne un résultat ancré à la commune (comme une recherche manuelle).
  */
-function decouper(zone: BoundingBox): BoundingBox[] {
-  const midLat = (zone.ne_lat + zone.sw_lat) / 2
-  const midLng = (zone.ne_lng + zone.sw_lng) / 2
-  return [
-    { ne_lat: zone.ne_lat, ne_lng: midLng,      sw_lat: midLat,      sw_lng: zone.sw_lng  },
-    { ne_lat: zone.ne_lat, ne_lng: zone.ne_lng,  sw_lat: midLat,      sw_lng: midLng       },
-    { ne_lat: midLat,      ne_lng: midLng,       sw_lat: zone.sw_lat, sw_lng: zone.sw_lng  },
-    { ne_lat: midLat,      ne_lng: zone.ne_lng,  sw_lat: zone.sw_lat, sw_lng: midLng       },
+async function rechercherViaAutocomplete(page: Page, destination: string): Promise<number> {
+  // Page d'accueil Airbnb
+  await page.goto('https://www.airbnb.fr', { waitUntil: 'domcontentloaded', timeout: 30000 })
+  await page.waitForTimeout(2000)
+
+  // Fermer la bannière cookies si présente
+  try {
+    const btnCookies = await page.$('[data-testid="accept-btn"], button:has-text("Accepter"), button:has-text("Tout accepter")')
+    if (btnCookies) await btnCookies.click()
+    await page.waitForTimeout(500)
+  } catch { /* ignorer */ }
+
+  // Remplir le champ destination (plusieurs sélecteurs possibles selon version Airbnb)
+  const champSels = [
+    '[data-testid="structured-search-input-field-query"]',
+    '#bigsearch-query-location-input',
+    'input[placeholder*="estination"]',
+    'input[name="query"]',
   ]
-}
+  let champTrouve = false
+  for (const sel of champSels) {
+    try {
+      const champ = await page.$(sel)
+      if (champ) {
+        await champ.click()
+        await page.waitForTimeout(300)
+        await champ.fill(destination)
+        champTrouve = true
+        break
+      }
+    } catch { /* continuer */ }
+  }
+  if (!champTrouve) throw new Error('Champ destination non trouvé')
 
-let compteurRequetes = 0
-let compteurZones = 0
-
-/**
- * Compte récursivement les annonces Airbnb dans une zone géographique
- * Si le nombre dépasse SEUIL_MAX → découpe en 4 quadrants et additionne
- */
-async function compterZoneAirbnb(
-  page: Page,
-  zone: BoundingBox,
-  destination: string,
-  profondeur = 0
-): Promise<number> {
-  if (profondeur >= PROFONDEUR_MAX) {
-    console.log(`[Airbnb] Profondeur max atteinte (${PROFONDEUR_MAX}) → on renvoie 0`)
-    return 0
+  // Attendre l'apparition de la liste de suggestions autocomplete
+  const suggSels = [
+    '[data-testid="option-0-label"]',
+    '[data-testid="option-0"]',
+    '[role="option"]:first-child',
+    'li[id*="option-0"]',
+  ]
+  let suggTrouvee = false
+  // Attendre que la dropdown soit visible (jusqu'à 5s)
+  for (const sel of suggSels) {
+    try {
+      await page.waitForSelector(sel, { timeout: 5000 })
+      await page.click(sel)
+      suggTrouvee = true
+      break
+    } catch { /* continuer avec le prochain sélecteur */ }
   }
 
+  if (!suggTrouvee) {
+    // Fallback : flèche bas + Entrée pour valider la première suggestion
+    await page.keyboard.press('ArrowDown')
+    await page.waitForTimeout(500)
+    await page.keyboard.press('Enter')
+  }
+
+  await page.waitForTimeout(1000)
+
+  // Lancer la recherche
+  const btnSels = [
+    '[data-testid="structured-search-input-search-button"]',
+    'button[type="submit"]',
+    'button[aria-label*="echercher"]',
+  ]
+  for (const sel of btnSels) {
+    try {
+      const btn = await page.$(sel)
+      if (btn) { await btn.click(); break }
+    } catch { /* continuer */ }
+  }
+
+  // Attendre le chargement initial des résultats (affiche 1000+ à ce stade)
+  await page.waitForTimeout(3500)
+
+  // Dézoom sur la carte pour déclencher le recalcul ancré à la commune
+  // Airbnb affiche 1000+ au chargement (search par nom large) puis après dézoom
+  // la carte déclenche search_by_map=true sur la zone visible → vrai nombre de la commune
+  await dezoomCarte(page)
+
+  return extraireNombreAirbnb(page)
+}
+
+/**
+ * Effectue un dézoom sur la carte Airbnb pour déclencher le recalcul du nombre d'annonces.
+ * Airbnb affiche 1000+ au chargement initial, puis recalcule après interaction avec la carte.
+ */
+async function dezoomCarte(page: Page): Promise<void> {
   try {
-    await page.goto(buildUrlAirbnb(zone, destination), {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000,
-    })
-    compteurRequetes++
-    compteurZones++
-    await page.waitForTimeout(DELAI_MS)
-
-    const nombre = await extraireNombreAirbnb(page)
-    console.log(`[Airbnb] Zone profondeur=${profondeur} → ${nombre} annonces`)
-
-    if (nombre >= SEUIL_MAX) {
-      console.log(`[Airbnb] > ${SEUIL_MAX} → découpage en 4 quadrants`)
-      const quadrants = decouper(zone)
-      let total = 0
-      for (const q of quadrants) {
-        total += await compterZoneAirbnb(page, q, destination, profondeur + 1)
-        await page.waitForTimeout(500)
-      }
-      return total
+    // Tentative 1 — bouton zoom- de la carte
+    const btnSelectors = [
+      'button[aria-label="Zoom out"]',
+      'button[aria-label="Réduire le zoom"]',
+      'button[aria-label="Dézoomer"]',
+      '[data-testid="map-zoom-out-button"]',
+      '[class*="zoomOut"]',
+      '[title="Zoom out"]',
+    ]
+    for (const sel of btnSelectors) {
+      try {
+        const btn = await page.$(sel)
+        if (btn) {
+          await btn.click()
+          console.log(`[Airbnb] Dézoom via bouton (${sel})`)
+          await page.waitForTimeout(2500)
+          return
+        }
+      } catch { /* continuer */ }
     }
 
-    return nombre
-  } catch (err: unknown) {
-    console.error(`[Airbnb] Erreur zone profondeur=${profondeur} :`, err instanceof Error ? err.message : err)
-    return 0
+    // Tentative 2 — scroll molette vers le bas sur la carte
+    const mapSelectors = [
+      '[data-veloute="map/GoogleMap"]',
+      '[data-section-id="MAP_DEFAULT_CONTROLLER"]',
+      '[class*="GoogleMap"]',
+      '#map',
+      'canvas',  // Airbnb utilise un canvas WebGL pour la carte
+    ]
+    for (const sel of mapSelectors) {
+      try {
+        const mapEl = await page.$(sel)
+        if (mapEl) {
+          const box = await mapEl.boundingBox()
+          if (box && box.width > 100 && box.height > 100) {
+            await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+            // Scroll vers le bas = zoom out sur les cartes web
+            await page.mouse.wheel(0, 150)
+            console.log(`[Airbnb] Dézoom via scroll molette (${sel})`)
+            await page.waitForTimeout(2500)
+            return
+          }
+        }
+      } catch { /* continuer */ }
+    }
+
+    console.warn('[Airbnb] Dézoom : aucun contrôle de carte trouvé — résultat peut être inexact')
+  } catch (err) {
+    console.warn('[Airbnb] Dézoom échoué :', err instanceof Error ? err.message : err)
   }
 }
 
 /**
  * Scrape Airbnb pour compter les annonces hébergement sur la commune.
- * @param bbox - Coordonnées géographiques de la commune. Si null (microservice indisponible),
- *               la recherche se fait par nom de ville uniquement (moins précis, pas de découpage récursif).
+ * Simule une interaction utilisateur complète pour obtenir un résultat ancré à la commune.
  */
 export async function scraperAirbnb(
   browser: Browser,
-  bbox: BoundingBox | null,
-  destination: string
+  destination: string,
+  code_insee: string  // conservé pour compatibilité — non utilisé dans cette stratégie
 ): Promise<ResultatAirbnb> {
   const debut = Date.now()
-  compteurRequetes = 0
-  compteurZones = 0
 
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
@@ -217,7 +254,7 @@ export async function scraperAirbnb(
     extraHTTPHeaders: { 'Accept-Language': 'fr-FR,fr;q=0.9' },
   })
 
-  // Bloquer ressources inutiles
+  // Bloquer ressources inutiles (images, fonts, tracking)
   await context.route('**/*.{png,jpg,jpeg,gif,webp,svg,ico,woff,woff2}', r => r.abort())
   await context.route('**/analytics**', r => r.abort())
   await context.route('**/tracking**', r => r.abort())
@@ -226,29 +263,22 @@ export async function scraperAirbnb(
   const page = await context.newPage()
 
   try {
-    let total_annonces: number
-
-    if (bbox) {
-      // Mode normal — recherche géographique avec découpage récursif
-      total_annonces = await compterZoneAirbnb(page, bbox, destination)
-    } else {
-      // Mode fallback — bbox indisponible, recherche par nom de ville uniquement (page unique)
-      console.warn('[Airbnb] Mode fallback sans bbox — résultat estimatif')
-      await page.goto(buildUrlAirbnbSansGeo(destination), {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000,
-      })
-      compteurRequetes++
-      await page.waitForTimeout(2500)
-      total_annonces = await extraireNombreAirbnb(page)
-    }
+    const total_annonces = await rechercherViaAutocomplete(page, destination)
+    console.log(`[Airbnb] ${destination} → ${total_annonces} annonces`)
 
     return {
       total_annonces,
-      nb_requetes: compteurRequetes,
-      nb_zones: compteurZones,
-      bbox_utilisee: bbox,
+      nb_requetes: 1,
       duree_ms: Date.now() - debut,
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`[Airbnb] Erreur pour ${destination} :`, message)
+    return {
+      total_annonces: 0,
+      nb_requetes: 1,
+      duree_ms: Date.now() - debut,
+      erreur: message,
     }
   } finally {
     await context.close()

@@ -1,11 +1,15 @@
 // Route POST /api/territoire/analyser
-// Pour chaque commune validée : récupère les stocks DATA Tourisme (via microservice)
-// et la taxe de séjour (via la logique existante executerTaxe).
-// Supporte jusqu'à 50 communes en parallèle.
+// Pour chaque commune validée : récupère les stocks DATA Tourisme (via microservice),
+// la taxe de séjour, et scrape Airbnb + Booking pour chaque commune.
+// Supporte jusqu'à 50 communes.
+
+export const runtime = 'nodejs'
+export const maxDuration = 300
 
 import { NextRequest, NextResponse } from 'next/server'
 import axios from 'axios'
 import { executerTaxe } from '@/app/api/blocs/volume-affaires/taxe/logic'
+import type { ResultatAirbnb, ResultatBooking } from '@/types/stock-en-ligne'
 
 const MELODI_BASE = 'https://api.insee.fr/melodi'
 
@@ -207,7 +211,7 @@ interface CommuneInput {
 interface Etablissement {
   uuid: string
   nom: string
-  categorie: 'hebergements' | 'activites' | 'culture' | 'services'
+  categorie: 'hebergements' | 'activites' | 'culture' | 'services' | 'equipements'
   sous_categorie: string
   telephone: string | null
   adresse: string | null
@@ -215,6 +219,11 @@ interface Etablissement {
   lat: number | null
   lng: number | null
   capacite: number | null
+  source: 'datatourisme' | 'tourinsoft' | 'apidae'
+  // Localité Apidae (commune.nom retourné par Apidae).
+  // Différent du nom admin pour les stations : "Le Collet", "Alpe d'Huez", etc.
+  // Uniquement renseigné pour source = 'apidae'.
+  localite_apidae?: string | null
 }
 
 interface ResultatTaxe {
@@ -269,6 +278,8 @@ interface ResultatCommune {
   insee_cap: CapaciteINSEE | null        // DS_TOUR_CAP — capacité officielle par type
   freq_departement: FrequentationINSEE | null  // DS_TOUR_FREQ — nuitées annuelles du département
   tourinsoft: TourinsofrCommune | null   // données ANMSM (station + stock) — null si hors périmètre
+  airbnb: ResultatAirbnb | null          // nombre d'annonces Airbnb actives (scraping)
+  booking: ResultatBooking | null        // nombre de propriétés Booking.com (scraping)
   erreur?: string
 }
 
@@ -280,11 +291,14 @@ async function fetchStocks(code_insee: string): Promise<{ hebergements: Etabliss
     timeout: 15000,
   })
 
-  const bruts: Etablissement[] = reponse.data.etablissements_bruts ?? []
+  const bruts: (Omit<Etablissement, 'source'>)[] = reponse.data.etablissements_bruts ?? []
+
+  // Taguer tous les établissements DATA Tourisme avec leur source
+  const tagués: Etablissement[] = bruts.map((e) => ({ ...e, source: 'datatourisme' as const }))
 
   return {
-    hebergements: bruts.filter((e) => e.categorie === 'hebergements'),
-    poi: bruts.filter((e) => e.categorie !== 'hebergements'),
+    hebergements: tagués.filter((e) => e.categorie === 'hebergements'),
+    poi: tagués.filter((e) => e.categorie !== 'hebergements'),
   }
 }
 
@@ -319,6 +333,310 @@ async function fetchTourinsoft(code_postal: string): Promise<TourinsofrCommune |
     }
   } catch {
     // Microservice indisponible ou commune hors périmètre ANMSM — pas bloquant
+    return null
+  }
+}
+
+// ─── Appel API Apidae ─────────────────────────────────────────────────────────
+
+// Typage minimal de l'objet Apidae retourné par l'API
+interface ApidaeElementRef { libelleFr?: string; id?: number; elementReferenceType?: string }
+interface ApidaeCapaciteHotel {
+  nombreChambresClassees?: number
+  nombreChambresDeclareesHotelier?: number
+  nombreTotalPersonnes?: number
+}
+
+interface ApidaeObjet {
+  id: number
+  type: string
+  nom?: { libelleFr?: string; libelle?: string; fr?: string }
+  localisation?: {
+    adresse?: { adresse1?: string; codePostal?: string; commune?: { nom?: string } }
+    geolocalisation?: { geoJson?: { coordinates?: [number, number] } }
+  }
+  informations?: {
+    moyensCommunication?: Array<{ type?: { id?: number }; coordonnees?: { fr?: string } }>
+  }
+  // Champs spécifiques par type d'hébergement
+  informationsHotellerie?: {
+    hotellerieType?: ApidaeElementRef
+    classement?: ApidaeElementRef
+    capacite?: ApidaeCapaciteHotel
+  }
+  informationsHebergementLocatif?: {
+    hebergementLocatifType?: ApidaeElementRef
+    capacite?: { nombrePersonnesMax?: number; nombreLits?: number }
+  }
+  informationsHebergementCollectif?: {
+    hebergementCollectifType?: ApidaeElementRef
+    capacite?: { nombrePersonnesMax?: number; nombreLits?: number; nombreLitsSimples?: number }
+  }
+  informationsHotelleriePleinAir?: {
+    hotelleriePleinAirType?: ApidaeElementRef
+    classement?: ApidaeElementRef
+    capacite?: { nombreEmplacements?: number; nombreEmplacementsLocatifs?: number }
+  }
+  // Champs spécifiques POI
+  informationsActivite?: {
+    activiteType?: ApidaeElementRef
+    categories?: ApidaeElementRef[]
+    activitesSportives?: ApidaeElementRef[]
+  }
+  informationsEquipement?: {
+    rubrique?: ApidaeElementRef
+    activites?: ApidaeElementRef[]
+  }
+}
+
+function nomApidae(obj: ApidaeObjet): string {
+  return obj.nom?.libelleFr ?? obj.nom?.libelle ?? obj.nom?.fr ?? '(sans nom)'
+}
+
+function contactsApidae(obj: ApidaeObjet): { tel: string | null; site: string | null } {
+  const moyens = obj.informations?.moyensCommunication ?? []
+  return {
+    tel:  moyens.find(m => m.type?.id === 201)?.coordonnees?.fr ?? null,
+    site: moyens.find(m => m.type?.id === 205)?.coordonnees?.fr ?? null,
+  }
+}
+
+function adresseApidae(obj: ApidaeObjet): { adresse: string | null; code_postal: string | null } {
+  const a = obj.localisation?.adresse
+  if (!a) return { adresse: null, code_postal: null }
+  const parts = [a.adresse1, a.codePostal, a.commune?.nom].filter(Boolean)
+  return { adresse: parts.join(', ') || null, code_postal: a.codePostal ?? null }
+}
+
+function coordsApidae(obj: ApidaeObjet): { lat: number | null; lng: number | null } {
+  const coords = obj.localisation?.geolocalisation?.geoJson?.coordinates
+  if (!coords || coords.length < 2) return { lat: null, lng: null }
+  return { lat: coords[1], lng: coords[0] }
+}
+
+// Mapping objet Apidae → sous_catégorie hébergement + capacité
+// Utilise les champs de sous-type imbriqués (informationsHotellerie, etc.)
+// plutôt que le type racine seul, pour distinguer résidences/collectifs et chambres d'hôtes/locations.
+function classifierHebApidae(obj: ApidaeObjet): { sous_categorie: string; capacite: number | null } {
+  const type = obj.type
+
+  if (type === 'HOTELLERIE') {
+    const cap = obj.informationsHotellerie?.capacite
+    const capacite = cap?.nombreChambresClassees ?? cap?.nombreChambresDeclareesHotelier ?? null
+    return { sous_categorie: 'hotels', capacite }
+  }
+
+  if (type === 'HEBERGEMENT_LOCATIF') {
+    const libelle = obj.informationsHebergementLocatif?.hebergementLocatifType?.libelleFr?.toLowerCase() ?? ''
+    const sous_categorie = libelle.includes('chambre') ? 'chambres_hotes' : 'locations'
+    return { sous_categorie, capacite: null }
+  }
+
+  if (type === 'HEBERGEMENT_COLLECTIF') {
+    const libelle = obj.informationsHebergementCollectif?.hebergementCollectifType?.libelleFr?.toLowerCase() ?? ''
+    // "Résidence de tourisme" → residences, tout le reste (village vacances, auberge...) → collectifs
+    const sous_categorie = (libelle.includes('résidence') || libelle.includes('residence')) ? 'residences' : 'collectifs'
+    return { sous_categorie, capacite: null }
+  }
+
+  if (type === 'HOTELLERIE_PLEIN_AIR') {
+    return { sous_categorie: 'campings', capacite: null }
+  }
+
+  return { sous_categorie: 'autres', capacite: null }
+}
+
+// Mapping objet Apidae POI → catégorie + sous_catégorie
+// Utilise les champs imbriqués pour une classification précise
+function classifierPoiApidae(obj: ApidaeObjet): {
+  categorie: 'activites' | 'equipements'
+  sous_categorie: string
+} {
+  if (obj.type === 'ACTIVITE') {
+    const typeAct = obj.informationsActivite?.activiteType?.libelleFr?.toLowerCase() ?? ''
+    // Tags sportifs joints pour une détection par mot-clé
+    const sportsTags = (obj.informationsActivite?.activitesSportives ?? [])
+      .map((s) => s.libelleFr?.toLowerCase() ?? '').join(' ')
+
+    let sous_categorie = 'sports_loisirs'
+    if (/ski|snowboard|hiver|raquettes|freestyle|slalom|biathlon|surf des neiges/.test(sportsTags)) {
+      sous_categorie = 'sports_hiver'
+    } else if (/vélo|vtt|cyclisme|vélo de route|vélo électrique/.test(sportsTags)) {
+      sous_categorie = 'cyclisme'
+    } else if (/randonnée|pédestre|trail|trekking|marche/.test(sportsTags)) {
+      sous_categorie = 'randonnee'
+    } else if (/équestre|cheval|équitation|poney/.test(sportsTags)) {
+      sous_categorie = 'equitation'
+    } else if (/eau|canyoning|kayak|rafting|natation|plongée|surf |voile|aviron/.test(sportsTags)) {
+      sous_categorie = 'sports_eau'
+    } else if (/grimpe|escalade|via ferrata|verticalité/.test(sportsTags)) {
+      sous_categorie = 'grimpe_escalade'
+    } else if (typeAct.includes('culturel')) {
+      sous_categorie = 'culturel'
+    }
+
+    return { categorie: 'activites', sous_categorie }
+  }
+
+  // EQUIPEMENT → classifier via les activites[] associées
+  const activitesTags = (obj.informationsEquipement?.activites ?? [])
+    .map((a) => a.libelleFr?.toLowerCase() ?? '').join(' ')
+
+  let sous_categorie = 'equipement'
+  if (/piscine|baignade/.test(activitesTags)) {
+    sous_categorie = 'piscines'
+  } else if (/bibliothèque|médiathèque|cinéma|musée|culturel/.test(activitesTags)) {
+    sous_categorie = 'culture'
+  } else if (/route|itinéraire|circuit|sentier/.test(activitesTags)) {
+    sous_categorie = 'itineraires'
+  } else if (/escalade|grimpe|via ferrata/.test(activitesTags)) {
+    sous_categorie = 'grimpe_escalade'
+  } else if (/salle|réception|fête|congrès/.test(activitesTags)) {
+    sous_categorie = 'salles'
+  }
+
+  return { categorie: 'equipements', sous_categorie }
+}
+
+const APIDAE_BASE_URL = 'https://api.apidae-tourisme.com/api/v002/recherche/list-objets-touristiques/'
+
+// Normalisation pour comparaison insensible à la casse, aux accents et aux tirets
+function normaliserNom(s: string): string {
+  return s.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[-_']/g, ' ')
+    .trim()
+}
+
+async function fetchApidae(
+  code_postal: string,
+  nom_commune: string,
+  // code_insee non utilisé : stratégie GPS + filtre commune.nom, pas de requête par INSEE
+  // (les codes INSEE dans Apidae sont souvent erronés — ex: hébergements de Theys indexés sous Saint-Clair-du-Rhône)
+  _code_insee: string,
+  // Noms de localités supplémentaires à inclure (ex: "Le Collet" pour Allevard).
+  // Sélectionnés par l'utilisateur dans la modale de sélection des localités.
+  localites_supplementaires: string[] = [],
+): Promise<{ hebergements: Etablissement[]; poi: Etablissement[] } | null> {
+  const apiKey   = process.env.APIDAE_API_KEY
+  const projetId = process.env.APIDAE_PROJECT_ID
+  if (!apiKey || !projetId) return null
+
+  try {
+    // Stratégie : GPS centré sur la mairie (BAN) + rayon 3km, puis post-filtrage par
+    // localisation.adresse.commune.nom. Plus fiable que communeCodesInsee car :
+    // 1. Les codes INSEE dans Apidae sont parfois erronés (hébergements de Theys indexés
+    //    sous Saint-Clair-du-Rhône, etc.)
+    // 2. Les stations de montagne (Alpe d'Huez) sont indexées sous un territoire Apidae
+    //    ("Alpe d'Huez") et non sous le code INSEE de la commune (Huez 38191)
+    // 3. GPS 3km par commune + filtre commune.nom élimine les doublons entre communes voisines.
+
+    // Centre via BAN — retourne les coordonnées de la mairie, plus proches du village habité
+    // que le centroïde géométrique de geo.api.gouv.fr (pertinent pour les communes de montagne).
+    let coords: [number, number] | null = null
+    try {
+      const banResp = await axios.get('https://api-adresse.data.gouv.fr/search/', {
+        params: { q: nom_commune, postcode: code_postal, type: 'municipality', limit: 1 },
+        timeout: 5000,
+      })
+      const feature = banResp.data.features?.[0]
+      if (feature?.geometry?.coordinates?.length === 2) {
+        coords = feature.geometry.coordinates as [number, number]
+      }
+    } catch { /* BAN indisponible */ }
+
+    if (!coords) return null
+
+    const CQ_HEB = 'type:HOTELLERIE OR type:HEBERGEMENT_LOCATIF OR type:HEBERGEMENT_COLLECTIF OR type:HOTELLERIE_PLEIN_AIR'
+    const CQ_POI = 'type:ACTIVITE OR type:EQUIPEMENT'
+    const FIELDS_HEB = ['id', 'nom', 'type', 'localisation', 'informations',
+      'informationsHotellerie', 'informationsHebergementLocatif',
+      'informationsHebergementCollectif', 'informationsHotelleriePleinAir']
+    const FIELDS_POI = ['id', 'nom', 'type', 'localisation', 'informations',
+      'informationsActivite', 'informationsEquipement']
+    const filtreGPS = { center: { type: 'Point', coordinates: coords }, radius: 3000 }
+
+    const requeteApidae = (filtre: Record<string, unknown>, criteresQuery: string, count: number, fields: string[]) =>
+      axios.get(APIDAE_BASE_URL, {
+        params: {
+          query: JSON.stringify({
+            projetId, apiKey, ...filtre,
+            criteresQuery, count, locales: ['fr'], responseFields: fields,
+          }),
+        },
+        timeout: 30_000,
+      })
+
+    const [hebResp, poiResp] = await Promise.all([
+      requeteApidae(filtreGPS, CQ_HEB, 200, FIELDS_HEB),
+      requeteApidae(filtreGPS, CQ_POI, 100, FIELDS_POI),
+    ])
+
+    // Post-filtrage par localisation.adresse.commune.nom — clé d'attribution Apidae.
+    // Utilise le nom retourné par Apidae lui-même (pas notre nom administratif) pour éviter
+    // les doublons entre communes voisines dans le cercle GPS.
+    // La comparaison bidirectionnelle couvre les alias : "Alpe d'Huez" ↔ "Huez",
+    // "Crêts en Belledonne" ↔ "Crêts-en-Belledonne", etc.
+    // Les objets sans commune.nom sont conservés par défaut.
+    // Les localités_supplementaires (ex: "Le Collet") sont incluses si sélectionnées par l'utilisateur.
+    const nomCible = normaliserNom(nom_commune)
+    const nomsSupp = localites_supplementaires.map(normaliserNom)
+    const filtreCommune = (obj: ApidaeObjet): boolean => {
+      const nomObj = obj.localisation?.adresse?.commune?.nom
+      if (!nomObj) return true
+      const n = normaliserNom(nomObj)
+      // Correspondance avec la commune principale
+      if (n.includes(nomCible) || nomCible.includes(n)) return true
+      // Correspondance avec les localités supplémentaires sélectionnées
+      return nomsSupp.some((supp) => n === supp || n.includes(supp) || supp.includes(n))
+    }
+
+    const objetsTouristiquesHeb = (hebResp.data.objetsTouristiques ?? []).filter(filtreCommune)
+    const objPoiFiltres          = (poiResp.data.objetsTouristiques ?? []).filter(filtreCommune)
+
+    const hebergements: Etablissement[] = (objetsTouristiquesHeb as ApidaeObjet[]).map((obj) => {
+      const { tel } = contactsApidae(obj)
+      const { adresse, code_postal: cp } = adresseApidae(obj)
+      const { lat, lng } = coordsApidae(obj)
+      const { sous_categorie, capacite } = classifierHebApidae(obj)
+      return {
+        uuid:             `apidae-${obj.id}`,
+        nom:              nomApidae(obj),
+        categorie:        'hebergements' as const,
+        sous_categorie,
+        telephone:        tel,
+        adresse,
+        code_postal:      cp,
+        lat,
+        lng,
+        capacite,
+        source:           'apidae' as const,
+        localite_apidae:  obj.localisation?.adresse?.commune?.nom ?? null,
+      }
+    })
+
+    const poi: Etablissement[] = (objPoiFiltres as ApidaeObjet[]).map((obj) => {
+      const { tel } = contactsApidae(obj)
+      const { adresse, code_postal: cp } = adresseApidae(obj)
+      const { lat, lng } = coordsApidae(obj)
+      return {
+        uuid:             `apidae-${obj.id}`,
+        nom:              nomApidae(obj),
+        ...classifierPoiApidae(obj),
+        telephone:        tel,
+        adresse,
+        code_postal:      cp,
+        lat,
+        lng,
+        capacite:         null,
+        source:           'apidae' as const,
+        localite_apidae:  obj.localisation?.adresse?.commune?.nom ?? null,
+      }
+    })
+
+    return { hebergements, poi }
+  } catch {
+    // Apidae indisponible ou commune sans données — non bloquant
     return null
   }
 }
@@ -566,42 +884,45 @@ function tourinsofrVersEtablissements(ts: TourinsofrCommune): {
   poi: Etablissement[]
 } {
   const hebergements: Etablissement[] = ts.hebergements.map((h) => ({
-    uuid: h.id,
-    nom: h.nom,
-    categorie: 'hebergements' as const,
+    uuid:          h.id,
+    nom:           h.nom,
+    categorie:     'hebergements' as const,
     sous_categorie: h.type.toLowerCase().replace(/[^a-z0-9]/g, '_'),
-    telephone: null,
-    adresse: null,
-    code_postal: h.code_postal,
-    lat: h.lat,
-    lng: h.lng,
-    capacite: h.lits || null,
+    telephone:     null,
+    adresse:       null,
+    code_postal:   h.code_postal,
+    lat:           h.lat,
+    lng:           h.lng,
+    capacite:      h.lits || null,
+    source:        'tourinsoft' as const,
   }))
 
   const poi: Etablissement[] = [
     ...ts.activites.map((a) => ({
-      uuid: a.id,
-      nom: a.nom,
-      categorie: 'activites' as const,
+      uuid:          a.id,
+      nom:           a.nom,
+      categorie:     'activites' as const,
       sous_categorie: a.type.toLowerCase().replace(/[^a-z0-9]/g, '_'),
-      telephone: null,
-      adresse: null,
-      code_postal: a.code_postal,
-      lat: a.lat,
-      lng: a.lng,
-      capacite: null,
+      telephone:     null,
+      adresse:       null,
+      code_postal:   a.code_postal,
+      lat:           a.lat,
+      lng:           a.lng,
+      capacite:      null,
+      source:        'tourinsoft' as const,
     })),
     ...ts.commerces.map((c) => ({
-      uuid: c.id,
-      nom: c.nom,
-      categorie: 'services' as const,
+      uuid:          c.id,
+      nom:           c.nom,
+      categorie:     'services' as const,
       sous_categorie: 'commerce',
-      telephone: null,
-      adresse: null,
-      code_postal: c.code_postal,
-      lat: c.lat,
-      lng: c.lng,
-      capacite: null,
+      telephone:     null,
+      adresse:       null,
+      code_postal:   c.code_postal,
+      lat:           c.lat,
+      lng:           c.lng,
+      capacite:      null,
+      source:        'tourinsoft' as const,
     })),
   ]
 
@@ -617,18 +938,27 @@ async function analyserCommune(
   freq_departement: FrequentationINSEE | null,
   epci: InfosEpci | null,
   rs_epci: number | null,
+  localites_supplementaires: string[] = [],
 ): Promise<ResultatCommune> {
   try {
-    // Stocks DATA Tourisme + données Tourinsoft en parallèle (pas de rate limit)
-    const [stocks, tourinsoft] = await Promise.all([
+    // Stocks DATA Tourisme + Tourinsoft + Apidae en parallèle (pas de rate limit)
+    const [stocks, tourinsoft, apidae] = await Promise.all([
       fetchStocks(commune.code_insee),
       fetchTourinsoft(commune.code_postal),
+      fetchApidae(commune.code_postal, commune.nom, commune.code_insee, localites_supplementaires),
     ])
 
-    // Priorité Tourinsoft si disponible — sinon fallback DATA Tourisme
-    const { hebergements, poi } = tourinsoft
-      ? tourinsofrVersEtablissements(tourinsoft)
-      : stocks
+    // Toutes les sources sont conservées séparément (plus de priorité unique)
+    // DATA Tourisme : toujours présent
+    const dt = stocks
+    // Tourinsoft : uniquement si dans le périmètre ANMSM
+    const ts = tourinsoft ? tourinsofrVersEtablissements(tourinsoft) : { hebergements: [], poi: [] }
+    // Apidae : si disponible
+    const ap = apidae ?? { hebergements: [], poi: [] }
+
+    // Fusion des 3 sources — source identifiable via le champ `source` de chaque item
+    const hebergements = [...dt.hebergements, ...ts.hebergements, ...ap.hebergements]
+    const poi = [...dt.poi, ...ts.poi, ...ap.poi]
 
     // Appels Mélodi séquentiels pour respecter le rate limit
     // (RS commune → capacité touristique — RS EPCI est pré-chargé, pas refetché ici)
@@ -652,6 +982,8 @@ async function analyserCommune(
       insee_cap,
       freq_departement,
       tourinsoft,
+      airbnb: null,
+      booking: null,
     }
   } catch (err) {
     console.error(`[Territoire/Analyser] Erreur commune ${commune.nom} :`, err)
@@ -669,6 +1001,8 @@ async function analyserCommune(
       insee_cap: null,
       freq_departement: null,
       tourinsoft: null,
+      airbnb: null,
+      booking: null,
       erreur: err instanceof Error ? err.message : 'Erreur inconnue',
     }
   }
@@ -680,6 +1014,9 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
     const communes: CommuneInput[] = body.communes ?? []
+    // Localités supplémentaires par code_insee (ex: { "38006": ["Le Collet"] })
+    // Sélectionnées par l'utilisateur dans la modale de sélection des localités.
+    const localitesParCommune: Record<string, string[]> = body.localites_par_commune ?? {}
 
     if (!Array.isArray(communes) || communes.length === 0) {
       return NextResponse.json({ error: 'Paramètre communes requis (tableau)' }, { status: 400 })
@@ -729,7 +1066,8 @@ export async function POST(req: NextRequest) {
       communes.map((c) => {
         const epci = epciParCommune.get(c.code_insee) ?? null
         const rs_epci = epci?.siren_epci ? (rsEpciMap.get(epci.siren_epci) ?? null) : null
-        return analyserCommune(c, freqParDept.get(c.code_departement) ?? null, epci, rs_epci)
+        const localites_supp = localitesParCommune[c.code_insee] ?? []
+        return analyserCommune(c, freqParDept.get(c.code_departement) ?? null, epci, rs_epci, localites_supp)
       })
     )
 

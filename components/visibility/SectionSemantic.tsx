@@ -1,9 +1,10 @@
-// Section Couverture sémantique — mots-clés disponibles vs positionnés
+// Section Couverture sémantique — deux niveaux d'analyse MARQUE et GLOBAL
 
 import type { RelatedKeyword, RankedKeyword } from '@/types/visibility'
 
 interface Props {
-  relatedKeywords: RelatedKeyword[]
+  matchKeywords: RelatedKeyword[]    // MARQUE : keywords/match (contiennent le seed)
+  relatedKeywords: RelatedKeyword[]  // GLOBAL  : keywords/related (liés thématiquement)
   rankedKeywords: RankedKeyword[]
   score: number
   domain: string
@@ -15,44 +16,93 @@ function formatVolume(v: number): string {
   return String(v)
 }
 
-export default function SectionSemantic({ relatedKeywords, rankedKeywords, score, domain }: Props) {
-  // Normalisation : supprime accents, apostrophes, espaces multiples
-  // pour matcher "alpe d'huez" == "alpe d huez" == "alpes d huez"
-  function norm(s: string): string {
-    return s.toLowerCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/[''`]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-  }
+// Normalise + trie les mots pour matcher "les 7 laux forfait" == "forfait les 7 laux"
+function norm(s: string): string {
+  return s.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[''`]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ').sort().join(' ')
+}
 
-  const rankedSet = new Set(rankedKeywords.map((r) => norm(r.keyword)))
+function OpportunitiesTable({ keywords, rankedSet, label, color }: {
+  keywords: RelatedKeyword[]
+  rankedSet: Set<string>
+  label: string
+  color: 'amber' | 'blue'
+}) {
 
-  const covered = relatedKeywords.filter((rk) => rankedSet.has(norm(rk.keyword)))
-  const missing = relatedKeywords
+  const covered = keywords.filter((rk) => rankedSet.has(norm(rk.keyword)))
+  const missing = keywords
     .filter((rk) => !rankedSet.has(norm(rk.keyword)))
     .sort((a, b) => b.searchVolume - a.searchVolume)
     .slice(0, 20)
 
-  // URL qui génère le plus de trafic estimé (somme des volumes de ses mots-clés)
-  // URL qui génère le plus de trafic estimé (somme ETV de ses mots-clés)
-  const etvParUrl = new Map<string, number>()
-  for (const rk of rankedKeywords) {
-    if (!rk.url) continue
-    etvParUrl.set(rk.url, (etvParUrl.get(rk.url) ?? 0) + rk.etv)
-  }
-  const urlPrincipale = [...etvParUrl.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
-  const kwUrlPrincipale = urlPrincipale
-    ? rankedKeywords
-        .filter((rk) => rk.url === urlPrincipale)
-        .sort((a, b) => b.etv - a.etv)
-        .slice(0, 20)
-    : []
+  const coveragePercent = keywords.length > 0
+    ? Math.round((covered.length / keywords.length) * 100)
+    : 0
 
-  const coveragePercent =
-    relatedKeywords.length > 0
-      ? Math.round((covered.length / relatedKeywords.length) * 100)
-      : 0
+  const totalVolume = keywords.reduce((s, rk) => s + rk.searchVolume, 0)
+  const coveredVolume = covered.reduce((s, rk) => s + rk.searchVolume, 0)
+  const volumePercent = totalVolume > 0 ? Math.round((coveredVolume / totalVolume) * 100) : 0
+
+  return (
+    <div>
+      <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-3">{label}</p>
+
+      {/* Stat principale : couverture en nombre de mots-clés */}
+      <div className="flex items-center gap-2 mb-1">
+        <span className={`text-2xl font-bold ${color === 'amber' ? 'text-amber-600' : 'text-blue-600'}`}>
+          {coveragePercent}%
+        </span>
+        <span className="text-xs text-slate-500 leading-tight">
+          des mots-clés<br />couverts
+        </span>
+      </div>
+      <p className="text-xs text-slate-400 mb-3">{covered.length} / {keywords.length} mots-clés</p>
+
+      {/* Stat complémentaire : couverture pondérée par le volume */}
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-base font-semibold text-slate-600">{volumePercent}%</span>
+        <span className="text-xs text-slate-400 leading-tight">du volume de<br />recherche capté</span>
+      </div>
+      <p className="text-xs text-slate-400 mb-3">{formatVolume(coveredVolume)} / {formatVolume(totalVolume)} recherches/mois</p>
+
+      <p className="text-xs text-slate-400 mb-2">{missing.length} opportunités manquées</p>
+      {missing.length === 0 ? (
+        <p className="text-sm text-slate-400">Tous les mots-clés sont couverts.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-100">
+                <th className="text-left py-1.5 pr-3 text-xs font-medium text-slate-400">Mot-clé</th>
+                <th className="text-right py-1.5 text-xs font-medium text-slate-400">Volume</th>
+              </tr>
+            </thead>
+            <tbody>
+              {missing.map((rk, i) => (
+                <tr key={i} className="border-b border-slate-50">
+                  <td className="py-1.5 pr-3 text-slate-700">{rk.keyword}</td>
+                  <td className="py-1.5 text-right text-slate-500 tabular-nums">
+                    {formatVolume(rk.searchVolume)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default function SectionSemantic({ matchKeywords, relatedKeywords, rankedKeywords, score, domain }: Props) {
+  const rankedSet = new Set(rankedKeywords.map((r) => norm(r.keyword)))
+
+  // Top 20 mots-clés du site entier, triés par trafic estimé décroissant
+  const top20Site = rankedKeywords.slice(0, 20)
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-5">
@@ -63,59 +113,27 @@ export default function SectionSemantic({ relatedKeywords, rankedKeywords, score
         </span>
       </div>
 
-      {/* Stat principale */}
-      <div className="mb-5 p-4 bg-slate-50 rounded-lg">
-        <p className="text-sm text-slate-700">
-          Le domaine <strong>{domain}</strong> se positionne sur{' '}
-          <strong>{covered.length} mots-clés</strong> parmi{' '}
-          <strong>{relatedKeywords.length} disponibles</strong> (vol ≥ 100) —{' '}
-          soit <strong>{coveragePercent}%</strong>
-        </p>
+      <div className="mb-5 p-4 bg-slate-50 rounded-lg text-sm text-slate-700">
+        Domaine analysé : <strong>{domain}</strong> — {rankedKeywords.length} positions connues
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        {/* Mots-clés absents à fort volume */}
+      {/* Grille 2 colonnes : MARQUE | TOP 20 */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
+
+        {/* Colonne 1 — Opportunités MARQUE */}
+        <OpportunitiesTable
+          keywords={matchKeywords}
+          rankedSet={rankedSet}
+          label="Opportunités Marque"
+          color="amber"
+        />
+
+        {/* Colonne 2 — Top 20 mots-clés du site */}
         <div>
           <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">
-            Top opportunités manquées ({missing.length})
+            Top 20 mots-clés — site entier
           </p>
-          {missing.length === 0 ? (
-            <p className="text-sm text-slate-400">Tous les mots-clés sont couverts.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-100">
-                    <th className="text-left py-1.5 pr-3 text-xs font-medium text-slate-400">Mot-clé</th>
-                    <th className="text-right py-1.5 text-xs font-medium text-slate-400">Volume</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {missing.map((rk, i) => (
-                    <tr key={i} className="border-b border-slate-50">
-                      <td className="py-1.5 pr-3 text-slate-700">{rk.keyword}</td>
-                      <td className="py-1.5 text-right text-slate-500 tabular-nums">
-                        {formatVolume(rk.searchVolume)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
-        {/* Top 20 mots-clés de la page la plus performante */}
-        <div>
-          <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">
-            Top 20 mots-clés — page la plus trafiquée
-          </p>
-          {urlPrincipale && (
-            <p className="text-xs text-slate-400 truncate mb-2" title={urlPrincipale}>
-              {urlPrincipale}
-            </p>
-          )}
-          {kwUrlPrincipale.length === 0 ? (
+          {top20Site.length === 0 ? (
             <p className="text-sm text-slate-400">Aucune donnée disponible.</p>
           ) : (
             <div className="overflow-x-auto">
@@ -128,9 +146,9 @@ export default function SectionSemantic({ relatedKeywords, rankedKeywords, score
                   </tr>
                 </thead>
                 <tbody>
-                  {kwUrlPrincipale.map((rk: RankedKeyword, i: number) => (
+                  {top20Site.map((rk: RankedKeyword, i: number) => (
                     <tr key={i} className="border-b border-slate-50">
-                      <td className="py-1.5 pr-3 text-slate-700 truncate max-w-[160px]">{rk.keyword}</td>
+                      <td className="py-1.5 pr-3 text-slate-700 truncate max-w-[140px]">{rk.keyword}</td>
                       <td className="py-1.5 pr-3 text-center">
                         <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-medium">
                           {rk.position}
@@ -146,6 +164,17 @@ export default function SectionSemantic({ relatedKeywords, rankedKeywords, score
             </div>
           )}
         </div>
+
+      </div>
+
+      {/* Bloc séparé — Opportunités Marché (GLOBAL) */}
+      <div className="border-t border-slate-100 pt-5">
+        <OpportunitiesTable
+          keywords={relatedKeywords}
+          rankedSet={rankedSet}
+          label="Opportunités Marché"
+          color="blue"
+        />
       </div>
     </div>
   )

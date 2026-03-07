@@ -179,7 +179,8 @@ export interface VisibilityData {
   paidAdsMain: PaidAd[]
   hotelsPackMain: HotelsPackItem[]
   compareSitesMain: CompareSiteItem[]
-  relatedKeywords: RelatedKeyword[]
+  matchKeywords: RelatedKeyword[]    // MARQUE — keywords/match (contiennent le seed)
+  relatedKeywords: RelatedKeyword[]  // GLOBAL  — keywords/related (liés thématiquement)
   rankedKeywords: RankedKeyword[]
   scores: VisibilityScores
   headline: string

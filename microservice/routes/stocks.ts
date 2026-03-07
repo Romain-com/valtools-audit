@@ -10,9 +10,19 @@ const router = Router()
 // Priorité décroissante — la première règle qui match gagne
 
 const TYPES_HEBERGEMENT = new Set([
+  // Hôtels
   'Hotel', 'schema:Hotel', 'HotelTrade',
-  'CollectiveAccommodation', 'HolidayResort',
-  'RentalAccommodation', 'SelfCateringAccommodation',
+  // Campings (souvent absents car type propre DATA Tourisme)
+  'Camping', 'CampingPark', 'Campsite',
+  // Chambres d'hôtes
+  'BedAndBreakfast', 'GuestHouse', 'schema:BedAndBreakfast', 'FarmInn',
+  // Résidences de tourisme
+  'Residence', 'TouristResidence', 'ResidenceHotelTourisme', 'ApartmentComplex',
+  // Hébergements collectifs / résidences de vacances
+  'CollectiveAccommodation', 'HolidayResort', 'Hostel', 'schema:Hostel',
+  // Locations (gîtes, meublés)
+  'RentalAccommodation', 'SelfCateringAccommodation', 'HolidayCottage', 'Gite',
+  // Génériques
   'Accommodation', 'schema:Accommodation', 'schema:LodgingBusiness',
 ])
 
@@ -74,8 +84,11 @@ const TYPES_SERVICES = new Set([
 
 function detecterSousCategHebergement(types: string[]): string {
   if (types.some(t => ['Hotel', 'schema:Hotel', 'HotelTrade'].includes(t))) return 'hotels'
-  if (types.some(t => ['CollectiveAccommodation', 'HolidayResort'].includes(t))) return 'collectifs'
-  if (types.some(t => ['RentalAccommodation', 'SelfCateringAccommodation'].includes(t))) return 'locations'
+  if (types.some(t => ['Camping', 'CampingPark', 'Campsite'].includes(t))) return 'campings'
+  if (types.some(t => ['BedAndBreakfast', 'GuestHouse', 'schema:BedAndBreakfast', 'FarmInn'].includes(t))) return 'chambres_hotes'
+  if (types.some(t => ['Residence', 'TouristResidence', 'ResidenceHotelTourisme', 'ApartmentComplex'].includes(t))) return 'residences'
+  if (types.some(t => ['CollectiveAccommodation', 'HolidayResort', 'Hostel', 'schema:Hostel'].includes(t))) return 'collectifs'
+  if (types.some(t => ['RentalAccommodation', 'SelfCateringAccommodation', 'HolidayCottage', 'Gite'].includes(t))) return 'locations'
   return 'autres'
 }
 
@@ -227,7 +240,7 @@ router.get('/', async (req: Request, res: Response) => {
 
   // Compteurs par catégorie et sous-catégorie
   const compteurs = {
-    hebergements: { total: 0, hotels: 0, collectifs: 0, locations: 0, autres: 0 },
+    hebergements: { total: 0, hotels: 0, campings: 0, chambres_hotes: 0, residences: 0, collectifs: 0, locations: 0, autres: 0 },
     activites: { total: 0, sports_loisirs: 0, visites_tours: 0, experiences: 0 },
     culture: { total: 0, patrimoine: 0, religieux: 0, musees_galeries: 0, spectacle_vivant: 0, nature: 0 },
     services: { total: 0, offices_tourisme: 0, agences: 0, location_materiel: 0, transport: 0 },

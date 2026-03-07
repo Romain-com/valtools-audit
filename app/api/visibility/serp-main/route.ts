@@ -72,8 +72,7 @@ export async function POST(req: NextRequest) {
           description: item.description ?? '',
           position: item.rank_absolute ?? 0,
           isReferenceDomain:
-            (item.domain ?? '').includes(cleanDomain) ||
-            cleanDomain.includes(item.domain?.replace('www.', '') ?? '____'),
+            (item.domain ?? '').replace('www.', '') === cleanDomain,
         }
       })
 
@@ -168,7 +167,7 @@ export async function POST(req: NextRequest) {
           description: item.description ?? '',
           position: item.rank_absolute ?? 0,
           isReferenceDomain:
-            domain.includes(cleanDomain) || cleanDomain.includes(domain.replace('www.', '')),
+            domain.replace('www.', '') === cleanDomain,
         }
       })
 

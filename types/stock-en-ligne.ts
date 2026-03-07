@@ -47,8 +47,6 @@ export interface ResultatSiteOT {
 export interface ResultatAirbnb {
   total_annonces: number
   nb_requetes: number
-  nb_zones: number
-  bbox_utilisee: BoundingBox | null  // null si le microservice bbox était indisponible (mode nom de ville)
   duree_ms: number
   erreur?: string
 }

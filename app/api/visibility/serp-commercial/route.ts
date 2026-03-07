@@ -109,7 +109,7 @@ export async function POST(req: NextRequest) {
             title: item.title ?? '',
             description: item.description ?? '',
             position: item.rank_absolute ?? 0,
-            isReferenceDomain: rootDomain.includes(cleanDomain) || cleanDomain.includes(rootDomain),
+            isReferenceDomain: rootDomain === cleanDomain,
           }
         })
 
@@ -160,7 +160,7 @@ export async function POST(req: NextRequest) {
           title: item.title ?? '',
           description: item.description ?? '',
           rootDomain,
-          isReferenceDomain: rootDomain.includes(cleanDomain) || cleanDomain.includes(rootDomain),
+          isReferenceDomain: rootDomain === cleanDomain,
         })
       }
 

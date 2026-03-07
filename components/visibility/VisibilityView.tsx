@@ -138,7 +138,7 @@ export default function VisibilityView() {
           { queries: activitesQueries, referenceDomain, section: 'activites' }
         ).then((r) => { markStep('Analyse activités (2 requêtes)'); return r }),
 
-        apiFetch<{ relatedKeywords: VisibilityData['relatedKeywords'] }>(
+        apiFetch<{ matchKeywords: VisibilityData['matchKeywords']; relatedKeywords: VisibilityData['relatedKeywords'] }>(
           '/api/visibility/related',
           { keyword: params.keyword }
         ).then((r) => { markStep('Univers sémantique'); return r }),
@@ -199,6 +199,7 @@ export default function VisibilityView() {
         compareSitesMain: mainResult.compareSitesMain ?? [],
         hebergementData: hebergData,
         activitesData: activitesData,
+        matchKeywords: relatedResult.matchKeywords ?? [],
         relatedKeywords: relatedResult.relatedKeywords ?? [],
         rankedKeywords: rankedResult.rankedKeywords ?? [],
       }
@@ -417,6 +418,7 @@ export default function VisibilityView() {
             referenceDomain={data.params.domain}
           />
           <SectionSemantic
+            matchKeywords={data.matchKeywords}
             relatedKeywords={data.relatedKeywords}
             rankedKeywords={data.rankedKeywords}
             score={data.scores.semantic}
