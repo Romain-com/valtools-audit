@@ -586,10 +586,19 @@ async function fetchApidae(
     // Les localités_supplementaires (ex: "Le Collet") sont incluses si sélectionnées par l'utilisateur.
     const nomCible = normaliserNom(nom_commune)
     const nomsSupp = localites_supplementaires.map(normaliserNom)
-    // Match commune : égalité stricte OU le nom cherché est le mot final du nom Apidae
-    // (et inversement). Couvre "Alpe d'Huez" ↔ "Huez" sans laisser passer "Oz en Oisans".
-    const matchCommune = (n: string, cible: string): boolean =>
-      n === cible || n.endsWith(' ' + cible) || cible.endsWith(' ' + n)
+    // Match commune : égalité, suffixe mot-final, ou préfixe + préposition géographique.
+    // Couvre : "Alpe d'Huez" ↔ "Huez" (suffixe), "Oz" ↔ "Oz-en-Oisans" (préfixe+prep).
+    // Bloque : "Villard-Reculas" ↔ "Oz-en-Oisans" (aucun lien).
+    const PREPS = /^(en|de|du|des|d|le|la|les|sur|sous|l[eè]s|lez) /
+    const matchCommune = (n: string, cible: string): boolean => {
+      if (n === cible) return true
+      // Suffixe : "alpe d huez" se termine par "huez"
+      if (n.endsWith(' ' + cible) || cible.endsWith(' ' + n)) return true
+      // Préfixe + préposition : "oz en oisans" commence par "oz" suivi de " en"
+      if (n.startsWith(cible + ' ') && PREPS.test(n.slice(cible.length + 1))) return true
+      if (cible.startsWith(n + ' ') && PREPS.test(cible.slice(n.length + 1))) return true
+      return false
+    }
 
     const filtreCommune = (obj: ApidaeObjet): boolean => {
       const nomObj = obj.localisation?.adresse?.commune?.nom

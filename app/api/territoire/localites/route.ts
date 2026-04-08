@@ -44,12 +44,17 @@ function normaliserNom(s: string): string {
     .trim()
 }
 
-// Match commune : égalité stricte OU le nom cherché est le mot final du nom Apidae
-// (et inversement). Couvre "Alpe d'Huez" ↔ "Huez" sans laisser passer "Oz en Oisans".
+// Match commune : égalité, suffixe mot-final, ou préfixe + préposition géographique.
+// Couvre : "Alpe d'Huez" ↔ "Huez" (suffixe), "Oz" ↔ "Oz-en-Oisans" (préfixe+prep).
+const PREPS = /^(en|de|du|des|d|le|la|les|sur|sous|l[eè]s|lez) /
 function correspondCommune(nomApidae: string, nomCommune: string): boolean {
   const n = normaliserNom(nomApidae)
   const cible = normaliserNom(nomCommune)
-  return n === cible || n.endsWith(' ' + cible) || cible.endsWith(' ' + n)
+  if (n === cible) return true
+  if (n.endsWith(' ' + cible) || cible.endsWith(' ' + n)) return true
+  if (n.startsWith(cible + ' ') && PREPS.test(n.slice(cible.length + 1))) return true
+  if (cible.startsWith(n + ' ') && PREPS.test(cible.slice(n.length + 1))) return true
+  return false
 }
 
 // ─── Découverte des localités Apidae pour une commune ─────────────────────────
