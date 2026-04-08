@@ -44,10 +44,12 @@ function normaliserNom(s: string): string {
     .trim()
 }
 
+// Match commune : égalité stricte OU le nom cherché est le mot final du nom Apidae
+// (et inversement). Couvre "Alpe d'Huez" ↔ "Huez" sans laisser passer "Oz en Oisans".
 function correspondCommune(nomApidae: string, nomCommune: string): boolean {
   const n = normaliserNom(nomApidae)
   const cible = normaliserNom(nomCommune)
-  return n === cible
+  return n === cible || n.endsWith(' ' + cible) || cible.endsWith(' ' + n)
 }
 
 // ─── Découverte des localités Apidae pour une commune ─────────────────────────

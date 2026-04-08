@@ -586,15 +586,20 @@ async function fetchApidae(
     // Les localités_supplementaires (ex: "Le Collet") sont incluses si sélectionnées par l'utilisateur.
     const nomCible = normaliserNom(nom_commune)
     const nomsSupp = localites_supplementaires.map(normaliserNom)
+    // Match commune : égalité stricte OU le nom cherché est le mot final du nom Apidae
+    // (et inversement). Couvre "Alpe d'Huez" ↔ "Huez" sans laisser passer "Oz en Oisans".
+    const matchCommune = (n: string, cible: string): boolean =>
+      n === cible || n.endsWith(' ' + cible) || cible.endsWith(' ' + n)
+
     const filtreCommune = (obj: ApidaeObjet): boolean => {
       const nomObj = obj.localisation?.adresse?.commune?.nom
       // Pas de commune déclarée → exclure (évite de récupérer des objets de communes voisines)
       if (!nomObj) return false
       const n = normaliserNom(nomObj)
-      // Correspondance stricte avec la commune principale
-      if (n === nomCible) return true
+      // Correspondance avec la commune principale (exacte ou suffixe)
+      if (matchCommune(n, nomCible)) return true
       // Correspondance avec les localités supplémentaires sélectionnées
-      return nomsSupp.some((supp) => n === supp)
+      return nomsSupp.some((supp) => matchCommune(n, supp))
     }
 
     const objetsTouristiquesHeb = (hebResp.data.objetsTouristiques ?? []).filter(filtreCommune)
