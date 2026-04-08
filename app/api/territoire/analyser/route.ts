@@ -505,6 +505,9 @@ function classifierPoiApidae(obj: ApidaeObjet): {
 
 const APIDAE_BASE_URL = 'https://api.apidae-tourisme.com/api/v002/recherche/list-objets-touristiques/'
 
+// Prépositions géographiques françaises dans les noms de communes
+const PREPS_GEO = /^(en|de|du|des|d|le|la|les|sur|sous|l[eè]s|lez) /
+
 // Normalisation pour comparaison insensible à la casse, aux accents et aux tirets
 function normaliserNom(s: string): string {
   return s.toLowerCase()
@@ -589,14 +592,11 @@ async function fetchApidae(
     // Match commune : égalité, suffixe mot-final, ou préfixe + préposition géographique.
     // Couvre : "Alpe d'Huez" ↔ "Huez" (suffixe), "Oz" ↔ "Oz-en-Oisans" (préfixe+prep).
     // Bloque : "Villard-Reculas" ↔ "Oz-en-Oisans" (aucun lien).
-    const PREPS = /^(en|de|du|des|d|le|la|les|sur|sous|l[eè]s|lez) /
     const matchCommune = (n: string, cible: string): boolean => {
       if (n === cible) return true
-      // Suffixe : "alpe d huez" se termine par "huez"
       if (n.endsWith(' ' + cible) || cible.endsWith(' ' + n)) return true
-      // Préfixe + préposition : "oz en oisans" commence par "oz" suivi de " en"
-      if (n.startsWith(cible + ' ') && PREPS.test(n.slice(cible.length + 1))) return true
-      if (cible.startsWith(n + ' ') && PREPS.test(cible.slice(n.length + 1))) return true
+      if (n.startsWith(cible + ' ') && PREPS_GEO.test(n.slice(cible.length + 1))) return true
+      if (cible.startsWith(n + ' ') && PREPS_GEO.test(cible.slice(n.length + 1))) return true
       return false
     }
 
@@ -902,12 +902,26 @@ async function calculerTaxe(
 }
 
 // ─── Conversion Tourinsoft → format Etablissement ────────────────────────────
+// Filtre par commune : le microservice retourne tout le code postal, on ne garde
+// que les items dont la commune Tourinsoft correspond à la commune demandée.
 
-function tourinsofrVersEtablissements(ts: TourinsofrCommune): {
+function matchCommuneTourinsoft(nomTourinsoft: string, nomCible: string): boolean {
+  const n = normaliserNom(nomTourinsoft)
+  const cible = normaliserNom(nomCible)
+  if (n === cible) return true
+  if (n.endsWith(' ' + cible) || cible.endsWith(' ' + n)) return true
+  if (n.startsWith(cible + ' ') && PREPS_GEO.test(n.slice(cible.length + 1))) return true
+  if (cible.startsWith(n + ' ') && PREPS_GEO.test(cible.slice(n.length + 1))) return true
+  return false
+}
+
+function tourinsofrVersEtablissements(ts: TourinsofrCommune, nomCommune: string): {
   hebergements: Etablissement[]
   poi: Etablissement[]
 } {
-  const hebergements: Etablissement[] = ts.hebergements.map((h) => ({
+  const hebergements: Etablissement[] = ts.hebergements
+    .filter((h) => !h.commune || matchCommuneTourinsoft(h.commune, nomCommune))
+    .map((h) => ({
     uuid:          h.id,
     nom:           h.nom,
     categorie:     'hebergements' as const,
@@ -924,7 +938,9 @@ function tourinsofrVersEtablissements(ts: TourinsofrCommune): {
   }))
 
   const poi: Etablissement[] = [
-    ...ts.activites.map((a) => ({
+    ...ts.activites
+      .filter((a) => !a.commune || matchCommuneTourinsoft(a.commune, nomCommune))
+      .map((a) => ({
       uuid:          a.id,
       nom:           a.nom,
       categorie:     'activites' as const,
@@ -939,7 +955,9 @@ function tourinsofrVersEtablissements(ts: TourinsofrCommune): {
       source:        'tourinsoft' as const,
       localite_source: a.commune || null,
     })),
-    ...ts.commerces.map((c) => ({
+    ...ts.commerces
+      .filter((c) => !c.commune || matchCommuneTourinsoft(c.commune, nomCommune))
+      .map((c) => ({
       uuid:          c.id,
       nom:           c.nom,
       categorie:     'services' as const,
@@ -981,8 +999,8 @@ async function analyserCommune(
     // Toutes les sources sont conservées séparément (plus de priorité unique)
     // DATA Tourisme : toujours présent
     const dt = stocks
-    // Tourinsoft : uniquement si dans le périmètre ANMSM
-    const ts = tourinsoft ? tourinsofrVersEtablissements(tourinsoft) : { hebergements: [], poi: [] }
+    // Tourinsoft : uniquement si dans le périmètre ANMSM — filtré par nom de commune
+    const ts = tourinsoft ? tourinsofrVersEtablissements(tourinsoft, commune.nom) : { hebergements: [], poi: [] }
     // Apidae : si disponible
     const ap = apidae ?? { hebergements: [], poi: [] }
 
