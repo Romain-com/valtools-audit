@@ -14,6 +14,7 @@ interface Etablissement {
   categorie: string
   sous_categorie: string
   telephone: string | null
+  email: string | null
   adresse: string | null
   code_postal: string | null
   lat: number | null
@@ -21,6 +22,7 @@ interface Etablissement {
   capacite: number | null
   source: 'datatourisme' | 'tourinsoft' | 'apidae'
   localite_apidae?: string | null
+  localite_source?: string | null
 }
 
 interface ResultatTaxe {
@@ -96,12 +98,14 @@ interface ItemFusion {
   id: string
   nom: string
   commune_admin: string
+  localite_source: string | null  // commune déclarée par Apidae/Tourinsoft
   cat_unif: string       // catégorie dans le référentiel unifié (ex: "Hébergements")
   souscat_unif: string   // sous-catégorie unifiée (ex: "Hôtellerie")
   sources: ('apidae' | 'tourinsoft')[]
   adresse: string | null
   code_postal: string | null
   telephone: string | null
+  email: string | null
   capacite: number | null
   lat: number | null
   lng: number | null
@@ -694,19 +698,29 @@ export default function TerritoireClient() {
 
   const syntheseHebergements = useMemo(() => {
     if (!resultats) return []
+    // Dédoublonnage inter-communes : un même uuid Tourinsoft peut apparaître
+    // dans plusieurs communes partageant le même code postal.
+    const uuidsTourinVus = new Set<string>()
     return resultats
       .filter((r) => filtreCommune === 'toutes' || r.commune.nom === filtreCommune)
       .map((r) => {
-        const dt  = r.hebergements.filter((e) => e.source === 'datatourisme')
-        const ts  = r.hebergements.filter((e) => e.source === 'tourinsoft')
-        const ap  = r.hebergements.filter((e) => e.source === 'apidae')
+        // Hébergements dédoublonnés : on exclut les Tourinsoft déjà vus dans une commune précédente
+        const hebDedup = r.hebergements.filter((e) => {
+          if (e.source !== 'tourinsoft') return true
+          if (uuidsTourinVus.has(e.uuid)) return false
+          uuidsTourinVus.add(e.uuid)
+          return true
+        })
+        const dt  = hebDedup.filter((e) => e.source === 'datatourisme')
+        const ts  = hebDedup.filter((e) => e.source === 'tourinsoft')
+        const ap  = hebDedup.filter((e) => e.source === 'apidae')
 
         return {
           nom:    r.commune.nom,
           code_insee: r.commune.code_insee,
           dept:   r.commune.code_departement,
           residences_secondaires: r.residences_secondaires,
-          total:  r.hebergements.length,
+          total:  hebDedup.length,
           freq_departement: r.freq_departement,
           // Données par source
           dt_total:      dt.length,
@@ -723,7 +737,7 @@ export default function TerritoireClient() {
           // OTA — scraping Airbnb + Booking
           airbnb_total:   r.airbnb?.total_annonces ?? null,
           booking_total:  r.booking?.total_proprietes ?? null,
-          etablissements: r.hebergements.map((e) => ({ ...e, commune: r.commune.nom, dept: r.commune.code_departement })),
+          etablissements: hebDedup.map((e) => ({ ...e, commune: r.commune.nom, dept: r.commune.code_departement })),
         }
       })
   }, [resultats, filtreCommune])
@@ -877,9 +891,14 @@ export default function TerritoireClient() {
   // Tous les éléments Tourinsoft enrichis avec la commune admin
   const tousItemsTourinsoft = useMemo(() => {
     if (!resultats) return []
+    // Dédoublonnage par uuid : quand plusieurs communes partagent le même code postal,
+    // le microservice Tourinsoft retourne les mêmes items pour chacune.
+    // On garde la première occurrence (première commune dans l'ordre des résultats).
+    const vus = new Set<string>()
     return resultats.flatMap((r) =>
       [...r.hebergements, ...r.poi]
         .filter((e) => e.source === 'tourinsoft')
+        .filter((e) => { if (vus.has(e.uuid)) return false; vus.add(e.uuid); return true })
         .map((e) => ({ ...e, commune_admin: r.commune.nom }))
     )
   }, [resultats])
@@ -994,31 +1013,26 @@ export default function TerritoireClient() {
     if (!resultats) return []
 
     // Enrichir avec catégories unifiées et indexer par commune
-    type ItemEnrichi = { uuid: string; nom: string; commune_admin: string; cat: string; sousCat: string; source: string }
+    type ItemEnrichi = { uuid: string; nom: string; commune_admin: string; localite_source: string | null; cat: string; sousCat: string; source: string }
     const apEnrichis: ItemEnrichi[] = tousItemsApidae.map((e) => {
       const { cat, sousCat } = getCatUnif(e.source, e.categorie, e.sous_categorie)
-      return { uuid: e.uuid, nom: e.nom, commune_admin: e.commune_admin, cat, sousCat, source: e.source }
+      return { uuid: e.uuid, nom: e.nom, commune_admin: e.commune_admin, localite_source: e.localite_source ?? null, cat, sousCat, source: e.source }
     })
     const tsEnrichis: ItemEnrichi[] = tousItemsTourinsoft.map((e) => {
       const { cat, sousCat } = getCatUnif(e.source, e.categorie, e.sous_categorie)
-      return { uuid: e.uuid, nom: e.nom, commune_admin: e.commune_admin, cat, sousCat, source: e.source }
+      return { uuid: e.uuid, nom: e.nom, commune_admin: e.commune_admin, localite_source: e.localite_source ?? null, cat, sousCat, source: e.source }
     })
 
-    // Index par commune pour réduire les comparaisons
-    const apParCommune = new Map<string, ItemEnrichi[]>()
-    for (const e of apEnrichis) {
-      if (!apParCommune.has(e.commune_admin)) apParCommune.set(e.commune_admin, [])
-      apParCommune.get(e.commune_admin)!.push(e)
-    }
-
+    // Comparaison globale (pas restreinte par commune) : un même établissement
+    // peut être indexé sous des communes différentes entre Apidae et Tourinsoft
+    // quand elles partagent le même code postal.
     const paires: PaireDoublon[] = []
     const apMatches = new Set<string>()
     const tsMatches = new Set<string>()
 
     for (const ts of tsEnrichis) {
       if (tsMatches.has(ts.uuid)) continue
-      const candidats = apParCommune.get(ts.commune_admin) ?? []
-      for (const ap of candidats) {
+      for (const ap of apEnrichis) {
         if (apMatches.has(ap.uuid)) continue
         // Même catégorie unifiée principale + noms similaires
         if (ap.cat === ts.cat && nomsSimilaires(ap.nom, ts.nom)) {
@@ -1063,9 +1077,11 @@ export default function TerritoireClient() {
       const { cat, sousCat } = getCatUnif(e.source, e.categorie, e.sous_categorie)
       items.push({
         id: e.uuid, nom: e.nom, commune_admin: e.commune_admin,
+        localite_source: e.localite_source ?? null,
         cat_unif: cat, souscat_unif: sousCat,
         sources: ['apidae'],
         adresse: e.adresse, code_postal: e.code_postal, telephone: e.telephone,
+        email: e.email ?? null,
         capacite: e.capacite, lat: e.lat, lng: e.lng,
       })
     }
@@ -1076,9 +1092,11 @@ export default function TerritoireClient() {
       const { cat, sousCat } = getCatUnif(e.source, e.categorie, e.sous_categorie)
       items.push({
         id: e.uuid, nom: e.nom, commune_admin: e.commune_admin,
+        localite_source: e.localite_source ?? null,
         cat_unif: cat, souscat_unif: sousCat,
         sources: ['tourinsoft'],
         adresse: e.adresse, code_postal: e.code_postal, telephone: e.telephone,
+        email: e.email ?? null,
         capacite: e.capacite, lat: e.lat, lng: e.lng,
       })
     }
@@ -1093,11 +1111,13 @@ export default function TerritoireClient() {
         id: pairId,
         nom: ap.nom,
         commune_admin: ap.commune_admin,
+        localite_source: ap.localite_source ?? ts.localite_source ?? null,
         cat_unif: cat, souscat_unif: sousCat,
         sources: ['apidae', 'tourinsoft'],
         adresse: ap.adresse ?? ts.adresse,
         code_postal: ap.code_postal ?? ts.code_postal,
         telephone: ap.telephone,
+        email: ap.email ?? ts.email ?? null,
         capacite: ap.capacite ?? ts.capacite,
         lat: ap.lat ?? ts.lat, lng: ap.lng ?? ts.lng,
         nom_apidae: ap.nom !== ts.nom ? ap.nom : undefined,
@@ -1183,6 +1203,8 @@ export default function TerritoireClient() {
       let va: number | string | null = null
       let vb: number | string | null = null
       if (sortFusionCol === 'commune') { va = a.commune_admin; vb = b.commune_admin }
+      else if (sortFusionCol === 'commune_source') { va = a.localite_source ?? ''; vb = b.localite_source ?? '' }
+      else if (sortFusionCol === 'email')    { va = a.email ?? ''; vb = b.email ?? '' }
       else if (sortFusionCol === 'nom')      { va = a.nom; vb = b.nom }
       else if (sortFusionCol === 'cat')      { va = a.cat_unif; vb = b.cat_unif }
       else if (sortFusionCol === 'souscat')  { va = a.souscat_unif; vb = b.souscat_unif }
@@ -1449,14 +1471,19 @@ export default function TerritoireClient() {
     if (!resultats) return { lignes: [], categories: [] as string[] }
     const filtered = resultats.filter((r) => filtreCommune === 'toutes' || r.commune.nom === filtreCommune)
     const categories = [...new Set(filtered.flatMap((r) => r.poi.map((e) => e.categorie)))].sort()
+    // Dédoublonnage inter-communes pour Tourinsoft (même code postal → mêmes items)
+    const uuidsTourinVus = new Set<string>()
     const lignes = filtered.map((r) => {
+      const poiDedup = r.poi.filter((e) => {
+        if (e.source !== 'tourinsoft') return true
+        if (uuidsTourinVus.has(e.uuid)) return false
+        uuidsTourinVus.add(e.uuid)
+        return true
+      })
       const parCategorie: Record<string, number> = {}
-      // Ventilation par source pour chaque catégorie (colonnes)
       const parSource: Record<string, Record<string, number>> = {}
-      // Ventilation par source ET sous-catégorie (tooltips par cellule)
-      // Structure : parSourceSousCateg[categorie][source][sous_categorie] = count
       const parSourceSousCateg: Record<string, Record<string, Record<string, number>>> = {}
-      for (const e of r.poi) {
+      for (const e of poiDedup) {
         parCategorie[e.categorie] = (parCategorie[e.categorie] ?? 0) + 1
         if (!parSource[e.categorie]) parSource[e.categorie] = { datatourisme: 0, tourinsoft: 0, apidae: 0 }
         parSource[e.categorie][e.source] = (parSource[e.categorie][e.source] ?? 0) + 1
@@ -1469,7 +1496,7 @@ export default function TerritoireClient() {
         nom: r.commune.nom,
         code_insee: r.commune.code_insee,
         dept: r.commune.code_departement,
-        total: r.poi.length,
+        total: poiDedup.length,
         parCategorie,
         parSource,
         parSourceSousCateg,
@@ -1570,6 +1597,7 @@ export default function TerritoireClient() {
   function exporterTourinsoft() {
     const lignes = itemsTourinFiltres.map((e) => ({
       Commune: e.commune_admin,
+      Commune_source: e.localite_source ?? '',
       Nom: e.nom,
       Categorie: e.categorie,
       Sous_categorie: e.sous_categorie,
@@ -1584,10 +1612,12 @@ export default function TerritoireClient() {
   function exporterFusion() {
     const lignes = itemsFusionFiltres.map((e) => ({
       Commune: e.commune_admin,
+      Commune_source: e.localite_source ?? '',
       Nom: e.nom,
       Nom_Apidae: e.nom_apidae ?? '',
       Nom_Tourinsoft: e.nom_tourinsoft ?? '',
       Sources: e.sources.join('+'),
+      Email: e.email ?? '',
       Categorie: e.cat_unif,
       Sous_categorie: e.souscat_unif,
       Code_postal: e.code_postal ?? '',
@@ -2606,7 +2636,7 @@ export default function TerritoireClient() {
                       </button>
                       {fusionPanelOuvert === 'colonnes' && (
                         <div className="absolute top-full left-0 mt-1 bg-gray-900 border border-white/15 rounded-lg shadow-xl py-1 min-w-[160px]">
-                          {['Commune','Nom','Catégorie','Sous-type','Sources','CP','Capacité','Carte'].map((col) => (
+                          {['Commune','Commune source','Nom','Catégorie','Sous-type','Sources','Email','CP','Capacité','Carte'].map((col) => (
                             <label key={col} className="flex items-center gap-2 px-3 py-1.5 hover:bg-white/5 cursor-pointer">
                               <input type="checkbox" checked={!fusionColsMasquees.has(col)} onChange={() => setFusionColsMasquees((prev) => { const n = new Set(prev); n.has(col) ? n.delete(col) : n.add(col); return n })} className="w-3.5 h-3.5 flex-shrink-0" />
                               <span className="text-xs text-white/70">{col}</span>
@@ -3624,10 +3654,12 @@ export default function TerritoireClient() {
                         <tr className="text-white/40 text-xs border-b border-white/5">
                           {([
                             ['Commune',      'commune'],
+                            ['Commune source', 'commune_source'],
                             ['Nom',          'nom'],
                             ['Catégorie',    'cat'],
                             ['Sous-type',    'souscat'],
                             ['Sources',      null],
+                            ['Email',        'email'],
                             ['CP',           'cp'],
                             ['Capacité',     'cap'],
                             ['Carte',        null],
@@ -3647,6 +3679,15 @@ export default function TerritoireClient() {
                         {fusionTriee.map((e, i) => (
                           <tr key={e.id} className={`border-b border-white/5 hover:bg-white/[0.03] ${i % 2 === 0 ? '' : 'bg-white/[0.02]'}`}>
                             <td className={`px-3 py-2 text-white/60 whitespace-nowrap text-xs ${fusionColsMasquees.has('Commune') ? 'hidden' : ''}`}>{e.commune_admin}</td>
+                            <td className={`px-3 py-2 whitespace-nowrap text-xs ${fusionColsMasquees.has('Commune source') ? 'hidden' : ''}`}>
+                              {e.localite_source ? (
+                                <span className={e.localite_source !== e.commune_admin ? 'text-amber-400 font-medium' : 'text-white/60'}>
+                                  {e.localite_source}
+                                </span>
+                              ) : (
+                                <span className="text-white/20">—</span>
+                              )}
+                            </td>
                             <td className={`px-3 py-2 text-white font-medium max-w-[220px] ${fusionColsMasquees.has('Nom') ? 'hidden' : ''}`}>
                               <span className="block truncate" title={e.nom}>{e.nom}</span>
                               {(e.nom_apidae || e.nom_tourinsoft) && (
@@ -3674,6 +3715,11 @@ export default function TerritoireClient() {
                                   <span className="px-1.5 py-0.5 rounded text-[10px] bg-teal-500/15 text-teal-300 whitespace-nowrap">Tourinsoft</span>
                                 )}
                               </div>
+                            </td>
+                            <td className={`px-3 py-2 text-xs max-w-[200px] ${fusionColsMasquees.has('Email') ? 'hidden' : ''}`}>
+                              {e.email ? (
+                                <a href={`mailto:${e.email}`} className="text-blue-400/70 hover:text-blue-300 truncate block" title={e.email}>{e.email}</a>
+                              ) : <span className="text-white/20">—</span>}
                             </td>
                             <td className={`px-3 py-2 text-white/40 text-xs whitespace-nowrap ${fusionColsMasquees.has('CP') ? 'hidden' : ''}`}>{e.code_postal ?? '—'}</td>
                             <td className={`px-3 py-2 text-right ${fusionColsMasquees.has('Capacité') ? 'hidden' : ''}`}>

@@ -47,7 +47,7 @@ function normaliserNom(s: string): string {
 function correspondCommune(nomApidae: string, nomCommune: string): boolean {
   const n = normaliserNom(nomApidae)
   const cible = normaliserNom(nomCommune)
-  return n.includes(cible) || cible.includes(n)
+  return n === cible
 }
 
 // ─── Découverte des localités Apidae pour une commune ─────────────────────────

@@ -214,6 +214,7 @@ interface Etablissement {
   categorie: 'hebergements' | 'activites' | 'culture' | 'services' | 'equipements'
   sous_categorie: string
   telephone: string | null
+  email: string | null
   adresse: string | null
   code_postal: string | null
   lat: number | null
@@ -224,6 +225,9 @@ interface Etablissement {
   // Différent du nom admin pour les stations : "Le Collet", "Alpe d'Huez", etc.
   // Uniquement renseigné pour source = 'apidae'.
   localite_apidae?: string | null
+  // Commune déclarée par la source (Apidae ou Tourinsoft).
+  // Permet de détecter les doublons inter-communes (même code postal, commune différente).
+  localite_source?: string | null
 }
 
 interface ResultatTaxe {
@@ -393,11 +397,12 @@ function nomApidae(obj: ApidaeObjet): string {
   return obj.nom?.libelleFr ?? obj.nom?.libelle ?? obj.nom?.fr ?? '(sans nom)'
 }
 
-function contactsApidae(obj: ApidaeObjet): { tel: string | null; site: string | null } {
+function contactsApidae(obj: ApidaeObjet): { tel: string | null; email: string | null; site: string | null } {
   const moyens = obj.informations?.moyensCommunication ?? []
   return {
-    tel:  moyens.find(m => m.type?.id === 201)?.coordonnees?.fr ?? null,
-    site: moyens.find(m => m.type?.id === 205)?.coordonnees?.fr ?? null,
+    tel:   moyens.find(m => m.type?.id === 201)?.coordonnees?.fr ?? null,
+    email: moyens.find(m => m.type?.id === 204)?.coordonnees?.fr ?? null,
+    site:  moyens.find(m => m.type?.id === 205)?.coordonnees?.fr ?? null,
   }
 }
 
@@ -583,19 +588,20 @@ async function fetchApidae(
     const nomsSupp = localites_supplementaires.map(normaliserNom)
     const filtreCommune = (obj: ApidaeObjet): boolean => {
       const nomObj = obj.localisation?.adresse?.commune?.nom
-      if (!nomObj) return true
+      // Pas de commune déclarée → exclure (évite de récupérer des objets de communes voisines)
+      if (!nomObj) return false
       const n = normaliserNom(nomObj)
-      // Correspondance avec la commune principale
-      if (n.includes(nomCible) || nomCible.includes(n)) return true
+      // Correspondance stricte avec la commune principale
+      if (n === nomCible) return true
       // Correspondance avec les localités supplémentaires sélectionnées
-      return nomsSupp.some((supp) => n === supp || n.includes(supp) || supp.includes(n))
+      return nomsSupp.some((supp) => n === supp)
     }
 
     const objetsTouristiquesHeb = (hebResp.data.objetsTouristiques ?? []).filter(filtreCommune)
     const objPoiFiltres          = (poiResp.data.objetsTouristiques ?? []).filter(filtreCommune)
 
     const hebergements: Etablissement[] = (objetsTouristiquesHeb as ApidaeObjet[]).map((obj) => {
-      const { tel } = contactsApidae(obj)
+      const { tel, email } = contactsApidae(obj)
       const { adresse, code_postal: cp } = adresseApidae(obj)
       const { lat, lng } = coordsApidae(obj)
       const { sous_categorie, capacite } = classifierHebApidae(obj)
@@ -605,6 +611,7 @@ async function fetchApidae(
         categorie:        'hebergements' as const,
         sous_categorie,
         telephone:        tel,
+        email,
         adresse,
         code_postal:      cp,
         lat,
@@ -612,11 +619,12 @@ async function fetchApidae(
         capacite,
         source:           'apidae' as const,
         localite_apidae:  obj.localisation?.adresse?.commune?.nom ?? null,
+        localite_source:  obj.localisation?.adresse?.commune?.nom ?? null,
       }
     })
 
     const poi: Etablissement[] = (objPoiFiltres as ApidaeObjet[]).map((obj) => {
-      const { tel } = contactsApidae(obj)
+      const { tel, email } = contactsApidae(obj)
       const { adresse, code_postal: cp } = adresseApidae(obj)
       const { lat, lng } = coordsApidae(obj)
       return {
@@ -624,6 +632,7 @@ async function fetchApidae(
         nom:              nomApidae(obj),
         ...classifierPoiApidae(obj),
         telephone:        tel,
+        email,
         adresse,
         code_postal:      cp,
         lat,
@@ -631,6 +640,7 @@ async function fetchApidae(
         capacite:         null,
         source:           'apidae' as const,
         localite_apidae:  obj.localisation?.adresse?.commune?.nom ?? null,
+        localite_source:  obj.localisation?.adresse?.commune?.nom ?? null,
       }
     })
 
@@ -889,12 +899,14 @@ function tourinsofrVersEtablissements(ts: TourinsofrCommune): {
     categorie:     'hebergements' as const,
     sous_categorie: h.type.toLowerCase().replace(/[^a-z0-9]/g, '_'),
     telephone:     null,
+    email:         null,
     adresse:       null,
     code_postal:   h.code_postal,
     lat:           h.lat,
     lng:           h.lng,
     capacite:      h.lits || null,
     source:        'tourinsoft' as const,
+    localite_source: h.commune || null,
   }))
 
   const poi: Etablissement[] = [
@@ -904,12 +916,14 @@ function tourinsofrVersEtablissements(ts: TourinsofrCommune): {
       categorie:     'activites' as const,
       sous_categorie: a.type.toLowerCase().replace(/[^a-z0-9]/g, '_'),
       telephone:     null,
+      email:         null,
       adresse:       null,
       code_postal:   a.code_postal,
       lat:           a.lat,
       lng:           a.lng,
       capacite:      null,
       source:        'tourinsoft' as const,
+      localite_source: a.commune || null,
     })),
     ...ts.commerces.map((c) => ({
       uuid:          c.id,
@@ -917,12 +931,14 @@ function tourinsofrVersEtablissements(ts: TourinsofrCommune): {
       categorie:     'services' as const,
       sous_categorie: 'commerce',
       telephone:     null,
+      email:         null,
       adresse:       null,
       code_postal:   c.code_postal,
       lat:           c.lat,
       lng:           c.lng,
       capacite:      null,
       source:        'tourinsoft' as const,
+      localite_source: c.commune || null,
     })),
   ]
 
